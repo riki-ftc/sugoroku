@@ -14,11 +14,14 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
             🎲 クイズすごろく <span className="text-sm font-normal text-gray-500">管理画面</span>
           </a>
           <nav className="flex gap-4 text-sm">
+            <a href="/admin" className="text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-100">
+              ゲームセット
+            </a>
             <a href="/admin/import" className="text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-100">
               インポート
             </a>
-            <a href="/admin" className="text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-100">
-              ゲームセット
+            <a href="/admin/create-game" className="text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-100">
+              ゲーム作成
             </a>
           </nav>
         </div>
