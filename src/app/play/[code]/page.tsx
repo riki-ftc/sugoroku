@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useRef, useCallback } from 'react';
-import { useParams, useSearchParams } from 'next/navigation';
+import { useParams, useSearchParams, useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import {
   type GameSession, type GameSet, type Team, type Cell, type Quiz, type Action,
@@ -88,7 +88,6 @@ function GameBoard({
               <span className="mt-0.5 font-mono text-[10px] text-gray-500">
                 {cell.cell_number}
               </span>
-              {/* チームのコマ表示 */}
               {teamsOnCell.length > 0 && (
                 <div className="absolute -bottom-1 left-1/2 flex -translate-x-1/2 gap-0.5">
                   {teamsOnCell.map((t) => (
@@ -155,7 +154,6 @@ function QuizModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl dark:bg-gray-900">
-        {/* タイマー */}
         {timeLimit > 0 && (
           <div className="mb-4 flex items-center justify-between">
             <span className="text-sm text-gray-500">残り時間</span>
@@ -166,7 +164,6 @@ function QuizModal({
             </span>
           </div>
         )}
-        {/* カテゴリ & 難易度 */}
         <div className="mb-3 flex gap-2 text-xs">
           {quiz.category && (
             <span className="rounded-full bg-gray-100 px-2 py-0.5 text-gray-600 dark:bg-gray-800 dark:text-gray-400">
@@ -183,9 +180,7 @@ function QuizModal({
             </span>
           )}
         </div>
-        {/* 問題文 */}
         <h3 className="mb-6 text-lg font-bold leading-relaxed">{quiz.question}</h3>
-        {/* 選択肢 */}
         <div className="space-y-3">
           {choices.map(({ key, text }) => (
             <button
@@ -216,16 +211,17 @@ function ResultModal({
   explanation,
   action,
   onContinue,
+  canContinue,
 }: {
   isCorrect: boolean | null;
   explanation: string | null;
   action: Action | null;
   onContinue: () => void;
+  canContinue: boolean;
 }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <div className="w-full max-w-md rounded-2xl bg-white p-6 text-center shadow-2xl dark:bg-gray-900">
-        {/* 正解/不正解 */}
         <div className="mb-4 text-6xl">
           {isCorrect === null ? '⏰' : isCorrect ? '🎉' : '😢'}
         </div>
@@ -238,7 +234,6 @@ function ResultModal({
         {explanation && (
           <p className="mb-4 text-sm text-gray-600 dark:text-gray-400">{explanation}</p>
         )}
-        {/* アクション結果 */}
         {action && (
           <div className="mb-4 rounded-lg bg-indigo-50 p-3 dark:bg-indigo-950">
             <p className="font-medium text-indigo-700 dark:text-indigo-300">
@@ -246,13 +241,27 @@ function ResultModal({
             </p>
           </div>
         )}
-        <button
-          onClick={onContinue}
-          className="mt-2 rounded-lg bg-indigo-600 px-8 py-3 font-bold text-white shadow-lg hover:bg-indigo-700"
-        >
-          次へ
-        </button>
+        {canContinue ? (
+          <button
+            onClick={onContinue}
+            className="mt-2 rounded-lg bg-indigo-600 px-8 py-3 font-bold text-white shadow-lg hover:bg-indigo-700"
+          >
+            次へ
+          </button>
+        ) : (
+          <p className="mt-2 text-sm text-gray-400 animate-pulse">操作者の操作を待っています...</p>
+        )}
       </div>
+    </div>
+  );
+}
+
+// === 接続エラーバナー ===
+function ConnectionBanner({ visible }: { visible: boolean }) {
+  if (!visible) return null;
+  return (
+    <div className="fixed top-0 left-0 right-0 z-40 bg-amber-500 px-4 py-2 text-center text-sm font-medium text-white shadow">
+      ⚠️ 接続が不安定です。再接続を試みています...
     </div>
   );
 }
@@ -261,25 +270,22 @@ function ResultModal({
 export default function PlayPage() {
   const params = useParams();
   const searchParams = useSearchParams();
+  const router = useRouter();
   const gameCode = params.code as string;
   const isHost = searchParams.get('host') === 'true';
 
-  // ゲームデータ
   const [session, setSession] = useState<GameSession | null>(null);
   const [gameSet, setGameSet] = useState<GameSet | null>(null);
   const [cells, setCells] = useState<Cell[]>([]);
   const [quizzes, setQuizzes] = useState<Quiz[]>([]);
   const [actions, setActions] = useState<Action[]>([]);
   const [teams, setTeams] = useState<Team[]>([]);
-
-  // ターン状態
   const [turnState, setTurnState] = useState<TurnState>(INITIAL_TURN_STATE);
   const [rolling, setRolling] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
-  // 自チーム
   const [myTeamId, setMyTeamId] = useState<string | null>(null);
+  const [connectionLost, setConnectionLost] = useState(false);
 
   const supabaseRef = useRef(createClient());
 
@@ -318,6 +324,12 @@ export default function PlayPage() {
       }, (payload) => {
         const updated = payload.new as GameSession;
         setSession(updated);
+        // ゲーム終了を検知したら結果ページへ遷移
+        if (updated.status === 'finished') {
+          setTimeout(() => {
+            router.push(`/results/${gameCode}`);
+          }, 2000);
+        }
       })
       .on('postgres_changes', {
         event: 'INSERT', schema: 'public', table: 'turn_events',
@@ -325,7 +337,16 @@ export default function PlayPage() {
       }, (payload) => {
         handleTurnEvent(payload.new as any);
       })
-      .subscribe();
+      .on('system', {}, (payload: any) => {
+        if (payload?.extension === 'system' && payload?.message === 'disconnected') {
+          setConnectionLost(true);
+        }
+      })
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          setConnectionLost(false);
+        }
+      });
 
     return () => { supabase.removeChannel(channel); };
   }, [session?.id, gameCode]);
@@ -334,33 +355,40 @@ export default function PlayPage() {
     setLoading(true);
     const supabase = supabaseRef.current;
 
-    // セッション取得
-    const { data: sess, error: sessErr } = await supabase
-      .from('game_sessions').select('*').eq('game_code', gameCode).single();
-    if (sessErr || !sess) {
-      setError('ゲームセッションが見つかりません');
-      setLoading(false);
-      return;
+    try {
+      const { data: sess, error: sessErr } = await supabase
+        .from('game_sessions').select('*').eq('game_code', gameCode).single();
+      if (sessErr || !sess) {
+        setError('ゲームセッションが見つかりません。コードを確認してください。');
+        setLoading(false);
+        return;
+      }
+
+      // 既に終了しているゲームは結果画面にリダイレクト
+      if (sess.status === 'finished') {
+        router.push(`/results/${gameCode}`);
+        return;
+      }
+
+      setSession(sess);
+
+      const { data: gs } = await supabase
+        .from('game_sets').select('*').eq('id', sess.game_set_id).single();
+      setGameSet(gs ?? null);
+
+      const [cellsRes, quizzesRes, actionsRes] = await Promise.all([
+        supabase.from('cells').select('*').eq('game_set_id', sess.game_set_id).order('cell_number'),
+        supabase.from('quizzes').select('*').eq('game_set_id', sess.game_set_id),
+        supabase.from('actions').select('*').eq('game_set_id', sess.game_set_id),
+      ]);
+      setCells(cellsRes.data ?? []);
+      setQuizzes(quizzesRes.data ?? []);
+      setActions(actionsRes.data ?? []);
+
+      await fetchTeams(sess.id);
+    } catch (err) {
+      setError('データの読み込み中にエラーが発生しました。ページを再読み込みしてください。');
     }
-    setSession(sess);
-
-    // ゲームセット
-    const { data: gs } = await supabase
-      .from('game_sets').select('*').eq('id', sess.game_set_id).single();
-    setGameSet(gs ?? null);
-
-    // マスター3テーブル
-    const [cellsRes, quizzesRes, actionsRes] = await Promise.all([
-      supabase.from('cells').select('*').eq('game_set_id', sess.game_set_id).order('cell_number'),
-      supabase.from('quizzes').select('*').eq('game_set_id', sess.game_set_id),
-      supabase.from('actions').select('*').eq('game_set_id', sess.game_set_id),
-    ]);
-    setCells(cellsRes.data ?? []);
-    setQuizzes(quizzesRes.data ?? []);
-    setActions(actionsRes.data ?? []);
-
-    // チーム
-    await fetchTeams(sess.id);
     setLoading(false);
   }
 
@@ -371,7 +399,6 @@ export default function PlayPage() {
     setTeams(data ?? []);
   }
 
-  // ターンイベント受信ハンドラ（Realtime経由）
   function handleTurnEvent(event: any) {
     const { event_type, payload } = event;
     switch (event_type) {
@@ -382,7 +409,6 @@ export default function PlayPage() {
           diceValue: payload.dice_value,
           targetPosition: payload.target_position,
         }));
-        // 移動アニメーション後にクイズフェーズへ
         setTimeout(() => {
           fetchTeams(session?.id ?? '');
           const cell = getCellByNumber(cells, payload.target_position);
@@ -395,7 +421,6 @@ export default function PlayPage() {
               currentQuiz: quiz ?? null,
             }));
           } else {
-            // クイズなしマス → 次のターンへ
             setTurnState((prev) => ({
               ...prev,
               phase: 'next',
@@ -419,18 +444,11 @@ export default function PlayPage() {
     }
   }
 
-  // サイコロを振る（自分のターンの場合のみ）
   async function handleRoll() {
     if (!session || !currentTurnTeam || rolling) return;
 
-    // スキップ券使用チェック
-    if (currentTurnTeam.skip_tokens > 0 && currentTurnTeam.pause_turns > 0) {
-      // 休みターンだがスキップ券がある場合の処理は後で実装
-    }
-
     setRolling(true);
 
-    // アニメーション用
     const animDuration = 800;
     setTimeout(async () => {
       const diceValue = rollDice(gameSet?.dice_sides ?? 6, gameSet?.dice_count ?? 1);
@@ -445,16 +463,13 @@ export default function PlayPage() {
         targetPosition: targetPos,
       }));
 
-      // DBに反映
       const supabase = supabaseRef.current;
 
-      // チーム位置更新
       await supabase
         .from('teams')
         .update({ current_position: targetPos })
         .eq('id', currentTurnTeam.id);
 
-      // ターンイベント記録
       await supabase.from('turn_events').insert({
         game_session_id: session.id,
         team_id: currentTurnTeam.id,
@@ -467,12 +482,10 @@ export default function PlayPage() {
         },
       });
 
-      // 移動後の処理
       setTimeout(() => {
         fetchTeams(session.id);
         const cell = getCellByNumber(cells, targetPos);
 
-        // ゴール判定
         if (targetPos >= maxCell) {
           handleGoal(currentTurnTeam);
           return;
@@ -498,14 +511,12 @@ export default function PlayPage() {
     }, animDuration);
   }
 
-  // クイズ回答
   async function handleAnswer(choice: string) {
     if (!session || !currentTurnTeam || !turnState.currentQuiz || !turnState.currentCell) return;
 
     const isCorrect = choice === turnState.currentQuiz.answer;
     const isTimeout = choice === 'TIMEOUT';
 
-    // 正解数更新
     if (isCorrect) {
       await supabaseRef.current
         .from('teams')
@@ -513,13 +524,11 @@ export default function PlayPage() {
         .eq('id', currentTurnTeam.id);
     }
 
-    // アクション決定
     const actionId = isCorrect
       ? turnState.currentCell.correct_action_id
       : turnState.currentCell.wrong_action_id;
     const action = actionId ? actions.find((a) => a.id === actionId) ?? null : null;
 
-    // ターンイベント記録
     await supabaseRef.current.from('turn_events').insert({
       game_session_id: session.id,
       team_id: currentTurnTeam.id,
@@ -544,7 +553,6 @@ export default function PlayPage() {
     }));
   }
 
-  // 結果確認後 → アクション適用 → ターン遷移
   async function handleResultContinue() {
     if (!session || !currentTurnTeam) return;
 
@@ -571,7 +579,6 @@ export default function PlayPage() {
         },
       });
 
-      // ゴール判定
       if (updates.is_finished) {
         await supabaseRef.current
           .from('teams')
@@ -584,7 +591,6 @@ export default function PlayPage() {
     setTimeout(() => advanceTurn(), 500);
   }
 
-  // ゴール処理
   async function handleGoal(team: Team) {
     if (!session) return;
     await supabaseRef.current
@@ -606,7 +612,6 @@ export default function PlayPage() {
     }));
   }
 
-  // ターン遷移
   async function advanceTurn() {
     if (!session) return;
 
@@ -614,12 +619,13 @@ export default function PlayPage() {
       .from('teams').select('*').eq('game_session_id', session.id)
       .order('turn_order')).data ?? [];
 
-    // ゲーム終了チェック
     if (isGameFinished(latestTeams)) {
       await supabaseRef.current
         .from('game_sessions')
         .update({ status: 'finished', finished_at: new Date().toISOString() })
         .eq('id', session.id);
+      // 結果ページへ遷移
+      setTimeout(() => router.push(`/results/${gameCode}`), 2000);
       return;
     }
 
@@ -627,15 +633,14 @@ export default function PlayPage() {
     const nextTeam = getNextTurnTeam(latestTeams, currentTeamId);
 
     if (!nextTeam) {
-      // 全員ゴール or 全員休み（レアケース）
       await supabaseRef.current
         .from('game_sessions')
         .update({ status: 'finished', finished_at: new Date().toISOString() })
         .eq('id', session.id);
+      setTimeout(() => router.push(`/results/${gameCode}`), 2000);
       return;
     }
 
-    // もう一度フラグをリセット
     if (nextTeam.id !== currentTeamId) {
       const currentTeam = latestTeams.find((t) => t.id === currentTeamId);
       if (currentTeam?.roll_again) {
@@ -646,15 +651,12 @@ export default function PlayPage() {
       }
     }
 
-    // 休みターンのデクリメント
     for (const t of latestTeams) {
       if (t.pause_turns > 0 && t.id === nextTeam.id) {
-        // このチームは休みなのでスキップ
         await supabaseRef.current
           .from('teams')
           .update({ pause_turns: t.pause_turns - 1 })
           .eq('id', t.id);
-        // 次の次のチームへ
         const afterNext = getNextTurnTeam(latestTeams.map((tt) =>
           tt.id === t.id ? { ...tt, pause_turns: tt.pause_turns - 1 } : tt
         ), nextTeam.id);
@@ -672,7 +674,6 @@ export default function PlayPage() {
       }
     }
 
-    // セッション更新
     await supabaseRef.current
       .from('game_sessions')
       .update({
@@ -684,60 +685,24 @@ export default function PlayPage() {
     setTurnState(INITIAL_TURN_STATE);
   }
 
-  // 現在のターンのチーム
   const currentTurnTeam = teams.find((t) => t.id === session?.current_turn_team_id);
   const isMyTurn = !isHost && myTeamId === session?.current_turn_team_id;
   const canRoll = (isHost || isMyTurn) && turnState.phase === 'roll' && !rolling;
   const canAnswer = isMyTurn && turnState.phase === 'quiz';
+  const canContinue = isHost || isMyTurn;
 
-  // ゲーム終了画面
+  // ゲーム終了 → 結果ページへの中間画面
   if (session?.status === 'finished') {
-    const rankedTeams = [...teams]
-      .sort((a, b) => {
-        if (a.is_finished && !b.is_finished) return -1;
-        if (!a.is_finished && b.is_finished) return 1;
-        if (a.finished_turn && b.finished_turn) return a.finished_turn - b.finished_turn;
-        return b.current_position - a.current_position;
-      });
-
     return (
       <div className="flex min-h-screen flex-col items-center justify-center bg-gradient-to-b from-amber-50 to-white p-6 dark:from-gray-950 dark:to-gray-900">
-        <h1 className="mb-2 text-4xl font-bold">🏆 ゲーム終了！</h1>
-        <p className="mb-8 text-gray-600 dark:text-gray-400">{gameSet?.name}</p>
-        <div className="w-full max-w-md space-y-3">
-          {rankedTeams.map((team, idx) => (
-            <div
-              key={team.id}
-              className={`flex items-center gap-3 rounded-xl p-4 shadow ${
-                idx === 0 ? 'border-2 border-amber-400 bg-amber-50 dark:bg-amber-950' :
-                idx === 1 ? 'border border-gray-300 bg-gray-50 dark:bg-gray-900' :
-                'border border-gray-200 bg-white dark:bg-gray-900'
-              }`}
-            >
-              <span className="text-2xl font-bold text-gray-400">
-                {idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `${idx + 1}`}
-              </span>
-              <span
-                className="flex h-10 w-10 items-center justify-center rounded-full text-lg"
-                style={{ backgroundColor: team.team_color ?? '#888' }}
-              >
-                {team.team_emoji ?? '●'}
-              </span>
-              <div className="flex-1">
-                <p className="font-bold">{team.team_name}</p>
-                <p className="text-xs text-gray-500">
-                  正解数: {team.correct_count} ・ マス: {team.current_position}
-                  {team.is_finished && ` ・ ${team.finished_turn}ターンでゴール`}
-                </p>
-              </div>
-            </div>
-          ))}
-        </div>
+        <div className="text-6xl mb-4">🏆</div>
+        <h1 className="mb-2 text-3xl font-bold">ゲーム終了！</h1>
+        <p className="mb-6 text-gray-500 animate-pulse">結果ページに移動します...</p>
         <a
-          href="/"
-          className="mt-8 rounded-lg bg-indigo-600 px-6 py-3 font-bold text-white hover:bg-indigo-700"
+          href={`/results/${gameCode}`}
+          className="rounded-lg bg-indigo-600 px-6 py-3 font-bold text-white hover:bg-indigo-700"
         >
-          トップへ戻る
+          結果を見る →
         </a>
       </div>
     );
@@ -746,22 +711,38 @@ export default function PlayPage() {
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center">
-        <p className="text-gray-500">ゲームを読み込み中...</p>
+        <div className="text-center">
+          <div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-4 border-indigo-500 border-t-transparent" />
+          <p className="text-gray-500">ゲームを読み込み中...</p>
+        </div>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="flex min-h-screen items-center justify-center">
-        <p className="text-red-600">{error}</p>
+      <div className="flex min-h-screen flex-col items-center justify-center gap-4 p-6">
+        <div className="text-4xl">😵</div>
+        <p className="text-red-600 font-medium">{error}</p>
+        <div className="flex gap-3">
+          <button
+            onClick={() => { setError(null); loadGameData(); }}
+            className="rounded-lg bg-indigo-600 px-6 py-2 font-medium text-white hover:bg-indigo-700"
+          >
+            再読み込み
+          </button>
+          <a href="/" className="rounded-lg border border-gray-300 px-6 py-2 font-medium text-gray-700 hover:bg-gray-50">
+            トップへ
+          </a>
+        </div>
       </div>
     );
   }
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-indigo-50 to-white dark:from-gray-950 dark:to-gray-900">
-      {/* ヘッダー */}
+      <ConnectionBanner visible={connectionLost} />
+
       <header className="border-b border-gray-200 bg-white/80 px-4 py-2 backdrop-blur dark:border-gray-800 dark:bg-gray-900/80">
         <div className="mx-auto flex max-w-5xl items-center justify-between">
           <div>
@@ -782,14 +763,11 @@ export default function PlayPage() {
 
       <main className="mx-auto max-w-5xl px-4 py-4">
         <div className="grid gap-4 lg:grid-cols-3">
-          {/* 盤面（2/3幅） */}
           <div className="lg:col-span-2">
             <GameBoard cells={cells} teams={teams} columns={5} />
           </div>
 
-          {/* サイドバー */}
           <div className="space-y-4">
-            {/* サイコロ & アクション */}
             <div className="rounded-xl border border-gray-200 bg-white p-4 shadow dark:border-gray-800 dark:bg-gray-900">
               <DiceDisplay value={turnState.diceValue} rolling={rolling} />
 
@@ -827,7 +805,6 @@ export default function PlayPage() {
               )}
             </div>
 
-            {/* チーム順位表 */}
             <div className="rounded-xl border border-gray-200 bg-white p-4 shadow dark:border-gray-800 dark:bg-gray-900">
               <h3 className="mb-3 text-sm font-semibold text-gray-700 dark:text-gray-300">チーム状況</h3>
               <div className="space-y-2">
@@ -878,7 +855,6 @@ export default function PlayPage() {
         </div>
       </main>
 
-      {/* クイズモーダル */}
       {turnState.phase === 'quiz' && turnState.currentQuiz && (canAnswer || isHost) && (
         <QuizModal
           quiz={turnState.currentQuiz}
@@ -887,13 +863,13 @@ export default function PlayPage() {
         />
       )}
 
-      {/* 結果モーダル */}
       {turnState.phase === 'result' && (
         <ResultModal
           isCorrect={turnState.isCorrect}
           explanation={turnState.currentQuiz?.explanation ?? null}
           action={turnState.actionToApply}
-          onContinue={(isHost || isMyTurn) ? handleResultContinue : () => {}}
+          onContinue={handleResultContinue}
+          canContinue={canContinue}
         />
       )}
     </div>
