@@ -286,7 +286,7 @@ export default function PlayPage() {
   // 自チームIDをsessionStorageから復元
   useEffect(() => {
     if (typeof window !== 'undefined' && !isHost) {
-      const stored = sessionStorage.getItem(`sugoroku_team_${gameCode}`);
+      const stored = sessionStorage.getItem(`team_${gameCode}`);
       if (stored) {
         try {
           const parsed = JSON.parse(stored);
