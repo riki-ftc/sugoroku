@@ -56,12 +56,10 @@ export default function HostPage() {
 
   const supabaseRef = useRef(createClient());
 
-  // 初期データ取得
   useEffect(() => {
     fetchData();
   }, [gameCode]);
 
-  // QRコード生成
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const joinUrl = `${window.location.origin}/join/${gameCode}`;
@@ -73,7 +71,6 @@ export default function HostPage() {
     }
   }, [gameCode]);
 
-  // Realtime購読
   useEffect(() => {
     if (!session) return;
     const supabase = supabaseRef.current;
@@ -106,6 +103,9 @@ export default function HostPage() {
           if (updated.status === 'playing') {
             router.push(`/play/${gameCode}?host=true`);
           }
+          if (updated.status === 'finished') {
+            router.push(`/results/${gameCode}`);
+          }
         }
       )
       .subscribe();
@@ -131,9 +131,20 @@ export default function HostPage() {
       return;
     }
 
+    // 終了済みゲームは結果ページへリダイレクト
+    if (sessionData.status === 'finished') {
+      router.push(`/results/${gameCode}`);
+      return;
+    }
+
+    // プレイ中ゲームはプレイ画面へリダイレクト
+    if (sessionData.status === 'playing') {
+      router.push(`/play/${gameCode}?host=true`);
+      return;
+    }
+
     setSession(sessionData);
 
-    // ゲームセット名を取得
     const { data: gsData } = await supabase
       .from('game_sets')
       .select('id, name')
@@ -161,8 +172,6 @@ export default function HostPage() {
     setError(null);
 
     const supabase = supabaseRef.current;
-
-    // 最初のチームを現在ターンに設定
     const firstTeam = teams.sort((a, b) => (a.turn_order ?? 0) - (b.turn_order ?? 0))[0];
 
     const { error: updateErr } = await supabase
@@ -179,13 +188,15 @@ export default function HostPage() {
       setError('ゲーム開始に失敗しました: ' + updateErr.message);
       setStarting(false);
     }
-    // Realtimeで status='playing' を検知して /play へ遷移
   }
 
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center">
-        <p className="text-gray-500">読み込み中...</p>
+        <div className="text-center">
+          <div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-4 border-indigo-500 border-t-transparent" />
+          <p className="text-gray-500">読み込み中...</p>
+        </div>
       </div>
     );
   }
@@ -213,7 +224,6 @@ export default function HostPage() {
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-indigo-50 to-white dark:from-gray-950 dark:to-gray-900">
-      {/* ヘッダー */}
       <header className="border-b border-gray-200 bg-white/80 px-6 py-3 backdrop-blur dark:border-gray-800 dark:bg-gray-900/80">
         <div className="mx-auto flex max-w-4xl items-center justify-between">
           <a href="/admin" className="text-sm text-gray-500 hover:text-gray-700">
@@ -239,7 +249,6 @@ export default function HostPage() {
         )}
 
         <div className="grid gap-8 md:grid-cols-2">
-          {/* 左: QRコード & ゲームコード */}
           <div className="text-center">
             <div className="inline-block rounded-2xl bg-white p-6 shadow-lg dark:bg-gray-900">
               {qrDataUrl && (
@@ -252,11 +261,18 @@ export default function HostPage() {
                   {session.game_code}
                 </p>
               </div>
-              <p className="mt-3 break-all text-xs text-gray-400">{joinUrl}</p>
+              <button
+                onClick={() => {
+                  navigator.clipboard?.writeText(joinUrl);
+                  alert('参加URLをコピーしました');
+                }}
+                className="mt-3 rounded border border-gray-300 px-4 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
+              >
+                📋 参加URLをコピー
+              </button>
             </div>
           </div>
 
-          {/* 右: 参加チーム一覧 */}
           <div>
             <div className="mb-4 flex items-center justify-between">
               <h2 className="text-lg font-semibold">
@@ -310,7 +326,6 @@ export default function HostPage() {
               </div>
             )}
 
-            {/* ゲーム開始ボタン */}
             {session.status === 'waiting' && (
               <button
                 onClick={handleStart}
