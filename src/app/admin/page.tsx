@@ -16,34 +16,48 @@ type GameSet = {
   action_count?: number;
 };
 
+type GameSessionSummary = {
+  id: string;
+  game_code: string;
+  game_set_id: string;
+  game_set_name: string;
+  host_name: string | null;
+  status: string;
+  turn_number: number;
+  team_count: number;
+  created_at: string;
+  finished_at: string | null;
+};
+
 export default function AdminPage() {
   const [gameSets, setGameSets] = useState<GameSet[]>([]);
+  const [recentGames, setRecentGames] = useState<GameSessionSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetchGameSets();
+    fetchAll();
   }, []);
 
-  async function fetchGameSets() {
+  async function fetchAll() {
     setLoading(true);
     setError(null);
     const supabase = createClient();
 
-    const { data, error: fetchError } = await supabase
+    // ゲームセット取得
+    const { data: gsData, error: gsErr } = await supabase
       .from('game_sets')
       .select('*')
       .order('created_at', { ascending: false });
 
-    if (fetchError) {
-      setError('ゲームセットの取得に失敗しました: ' + fetchError.message);
+    if (gsErr) {
+      setError('ゲームセットの取得に失敗しました: ' + gsErr.message);
       setLoading(false);
       return;
     }
 
-    // 各ゲームセットのマス数・問題数・アクション数を取得
     const enriched = await Promise.all(
-      (data ?? []).map(async (gs) => {
+      (gsData ?? []).map(async (gs) => {
         const [cellRes, quizRes, actionRes] = await Promise.all([
           supabase.from('cells').select('id', { count: 'exact', head: true }).eq('game_set_id', gs.id),
           supabase.from('quizzes').select('id', { count: 'exact', head: true }).eq('game_set_id', gs.id),
@@ -57,13 +71,63 @@ export default function AdminPage() {
         };
       })
     );
-
     setGameSets(enriched);
+
+    // 最近のゲームセッション取得（最新10件）
+    const { data: sessData } = await supabase
+      .from('game_sessions')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(10);
+
+    if (sessData && sessData.length > 0) {
+      const sessions: GameSessionSummary[] = await Promise.all(
+        sessData.map(async (sess: any) => {
+          const gs = enriched.find((g) => g.id === sess.game_set_id);
+          const { count } = await supabase
+            .from('teams')
+            .select('id', { count: 'exact', head: true })
+            .eq('game_session_id', sess.id);
+          return {
+            id: sess.id,
+            game_code: sess.game_code,
+            game_set_id: sess.game_set_id,
+            game_set_name: gs?.name ?? '不明',
+            host_name: sess.host_name,
+            status: sess.status,
+            turn_number: sess.turn_number,
+            team_count: count ?? 0,
+            created_at: sess.created_at,
+            finished_at: sess.finished_at,
+          };
+        })
+      );
+      setRecentGames(sessions);
+    }
+
     setLoading(false);
   }
 
+  function formatDate(dateStr: string): string {
+    const d = new Date(dateStr);
+    return d.toLocaleDateString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  }
+
+  function statusBadge(status: string) {
+    switch (status) {
+      case 'waiting':
+        return <span className="rounded-full bg-yellow-100 px-2 py-0.5 text-xs font-medium text-yellow-700">受付中</span>;
+      case 'playing':
+        return <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700 animate-pulse">プレイ中</span>;
+      case 'finished':
+        return <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">終了</span>;
+      default:
+        return <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-500">{status}</span>;
+    }
+  }
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">管理画面ホーム</h1>
         <a
@@ -78,9 +142,7 @@ export default function AdminPage() {
       <section>
         <h2 className="mb-3 text-lg font-semibold">ゲームセット一覧</h2>
 
-        {loading && (
-          <p className="text-sm text-gray-500">読み込み中...</p>
-        )}
+        {loading && <p className="text-sm text-gray-500">読み込み中...</p>}
 
         {error && (
           <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
@@ -145,6 +207,61 @@ export default function AdminPage() {
           </div>
         )}
       </section>
+
+      {/* 最近のゲーム履歴 */}
+      {!loading && recentGames.length > 0 && (
+        <section>
+          <h2 className="mb-3 text-lg font-semibold">最近のゲーム</h2>
+          <div className="space-y-2">
+            {recentGames.map((game) => (
+              <div
+                key={game.id}
+                className="flex items-center gap-4 rounded-lg border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900"
+              >
+                <div className="flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-sm font-bold text-indigo-600">{game.game_code}</span>
+                    {statusBadge(game.status)}
+                  </div>
+                  <p className="mt-0.5 text-sm text-gray-600 dark:text-gray-400">
+                    {game.game_set_name}
+                    {game.host_name && ` ・ ${game.host_name}`}
+                  </p>
+                  <p className="text-xs text-gray-400">
+                    {formatDate(game.created_at)} ・ {game.team_count}チーム ・ {game.turn_number}ターン
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  {game.status === 'waiting' && (
+                    <a
+                      href={`/host/${game.game_code}`}
+                      className="rounded border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300"
+                    >
+                      ホスト画面
+                    </a>
+                  )}
+                  {game.status === 'playing' && (
+                    <a
+                      href={`/play/${game.game_code}?host=true`}
+                      className="rounded bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700"
+                    >
+                      ▶ 再参加
+                    </a>
+                  )}
+                  {game.status === 'finished' && (
+                    <a
+                      href={`/results/${game.game_code}`}
+                      className="rounded bg-amber-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-600"
+                    >
+                      🏆 結果
+                    </a>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
     </div>
   );
 }
