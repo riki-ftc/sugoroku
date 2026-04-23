@@ -2,9 +2,12 @@ import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
-  // Cloudflare Pages へデプロイする場合、必要に応じて output: 'standalone' などに変更
   images: {
     unoptimized: true,
+  },
+  experimental: {
+    // useSearchParams を Suspense なしでも許可（CSR専用ページ向け）
+    missingSuspenseWithCSRBailout: false,
   },
 };
 
