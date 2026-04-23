@@ -5,10 +5,6 @@ const nextConfig: NextConfig = {
   images: {
     unoptimized: true,
   },
-  experimental: {
-    // useSearchParams を Suspense なしでも許可（CSR専用ページ向け）
-    missingSuspenseWithCSRBailout: false,
-  },
 };
 
 export default nextConfig;
