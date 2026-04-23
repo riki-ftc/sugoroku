@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 
@@ -17,7 +17,7 @@ type CreatedGame = {
   game_code: string;
 };
 
-export default function CreateGamePage() {
+function CreateGameContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const preselectedId = searchParams.get('gameSetId');
@@ -61,7 +61,6 @@ export default function CreateGamePage() {
 
     const supabase = createClient();
 
-    // generate_game_code() 関数をDBから呼び出してコード生成
     const { data: codeData, error: codeErr } = await supabase.rpc('generate_game_code');
     if (codeErr || !codeData) {
       setError('ゲームコードの生成に失敗しました: ' + (codeErr?.message ?? ''));
@@ -71,7 +70,6 @@ export default function CreateGamePage() {
 
     const gameCode = codeData as string;
 
-    // ゲームセッションを作成
     const { data: session, error: sessionErr } = await supabase
       .from('game_sessions')
       .insert({
@@ -96,7 +94,6 @@ export default function CreateGamePage() {
 
   if (loading) return <p className="text-gray-500">読み込み中...</p>;
 
-  // 作成完了画面
   if (created) {
     const gameUrl = `${typeof window !== 'undefined' ? window.location.origin : ''}/join/${created.game_code}`;
     return (
@@ -153,7 +150,6 @@ export default function CreateGamePage() {
     );
   }
 
-  // ゲーム作成フォーム
   return (
     <div className="mx-auto max-w-lg space-y-6">
       <div>
@@ -181,7 +177,6 @@ export default function CreateGamePage() {
         </div>
       ) : (
         <div className="space-y-5">
-          {/* ゲームセット選択 */}
           <div>
             <label className="mb-1 block text-sm font-medium">ゲームセット</label>
             <select
@@ -197,7 +192,6 @@ export default function CreateGamePage() {
             </select>
           </div>
 
-          {/* ホスト名 */}
           <div>
             <label className="mb-1 block text-sm font-medium">先生の名前（任意）</label>
             <input
@@ -209,7 +203,6 @@ export default function CreateGamePage() {
             />
           </div>
 
-          {/* 最大チーム数 */}
           <div>
             <label className="mb-1 block text-sm font-medium">最大チーム数</label>
             <select
@@ -223,7 +216,6 @@ export default function CreateGamePage() {
             </select>
           </div>
 
-          {/* 作成ボタン */}
           <button
             onClick={handleCreate}
             disabled={creating || !selectedId}
@@ -234,5 +226,13 @@ export default function CreateGamePage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function CreateGamePage() {
+  return (
+    <Suspense fallback={<p className="text-gray-500">読み込み中...</p>}>
+      <CreateGameContent />
+    </Suspense>
   );
 }
