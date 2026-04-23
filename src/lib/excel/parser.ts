@@ -107,8 +107,8 @@ function parseGameSettings(wb: XLSX.WorkBook): GameSettingsRow {
   const ws = wb.Sheets[SHEET_NAMES.GAME_SETTINGS];
   if (!ws) throw new Error(`シート「${SHEET_NAMES.GAME_SETTINGS}」が見つかりません`);
 
-  // キー・バリュー形式：A列=キー、B列=値
-  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { header: 1 }) as unknown[][];
+  // キー・バリュー形式：A列=キー、B列=値（header: 1 で配列の配列として取得）
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1 }) as unknown as unknown[][];
 
   const kv = new Map<string, unknown>();
   for (const row of rows) {
