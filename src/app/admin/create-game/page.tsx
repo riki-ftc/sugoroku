@@ -4,6 +4,9 @@ import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 
+// プリレンダリングをスキップ（useSearchParams使用のため）
+export const dynamic = 'force-dynamic';
+
 type GameSet = {
   id: string;
   name: string;
