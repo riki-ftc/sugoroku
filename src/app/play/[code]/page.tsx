@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useRef, useCallback, Suspense } from 'react';
 import { useParams, useSearchParams, useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import {
@@ -122,6 +122,13 @@ function QuizModal({
 }) {
   const [remaining, setRemaining] = useState(timeLimit);
   const [selected, setSelected] = useState<string | null>(null);
+  const answeredRef = useRef(false);
+
+  useEffect(() => {
+    setRemaining(timeLimit);
+    setSelected(null);
+    answeredRef.current = false;
+  }, [quiz.id, timeLimit]);
 
   useEffect(() => {
     if (timeLimit <= 0) return;
@@ -129,14 +136,17 @@ function QuizModal({
       setRemaining((prev) => {
         if (prev <= 1) {
           clearInterval(timer);
-          if (!selected) onAnswer('TIMEOUT');
+          if (!answeredRef.current) {
+            answeredRef.current = true;
+            onAnswer('TIMEOUT');
+          }
           return 0;
         }
         return prev - 1;
       });
     }, 1000);
     return () => clearInterval(timer);
-  }, [timeLimit, selected, onAnswer]);
+  }, [quiz.id, timeLimit, onAnswer]);
 
   const choices = [
     { key: 'A', text: quiz.choice_a },
@@ -146,7 +156,8 @@ function QuizModal({
   ];
 
   function handleSelect(key: string) {
-    if (selected) return;
+    if (selected || answeredRef.current) return;
+    answeredRef.current = true;
     setSelected(key);
     setTimeout(() => onAnswer(key), 400);
   }
@@ -266,8 +277,8 @@ function ConnectionBanner({ visible }: { visible: boolean }) {
   );
 }
 
-// === メインプレイページ ===
-export default function PlayPage() {
+// === メインプレイコンテンツ ===
+function PlayContent() {
   const params = useParams();
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -288,8 +299,18 @@ export default function PlayPage() {
   const [connectionLost, setConnectionLost] = useState(false);
 
   const supabaseRef = useRef(createClient());
+  const sessionRef = useRef<GameSession | null>(null);
+  const teamsRef = useRef<Team[]>([]);
+  const cellsRef = useRef<Cell[]>([]);
+  const quizzesRef = useRef<Quiz[]>([]);
+  const actionsRef = useRef<Action[]>([]);
 
-  // 自チームIDをsessionStorageから復元
+  useEffect(() => { sessionRef.current = session; }, [session]);
+  useEffect(() => { teamsRef.current = teams; }, [teams]);
+  useEffect(() => { cellsRef.current = cells; }, [cells]);
+  useEffect(() => { quizzesRef.current = quizzes; }, [quizzes]);
+  useEffect(() => { actionsRef.current = actions; }, [actions]);
+
   useEffect(() => {
     if (typeof window !== 'undefined' && !isHost) {
       const stored = sessionStorage.getItem(`team_${gameCode}`);
@@ -302,40 +323,41 @@ export default function PlayPage() {
     }
   }, [gameCode, isHost]);
 
-  // 初期データ取得
   useEffect(() => {
     loadGameData();
   }, [gameCode]);
 
-  // Realtime購読
   useEffect(() => {
     if (!session) return;
     const supabase = supabaseRef.current;
+    const sessionId = session.id;
 
     const channel = supabase
       .channel(`play:${gameCode}`)
       .on('postgres_changes', {
         event: '*', schema: 'public', table: 'teams',
-        filter: `game_session_id=eq.${session.id}`,
-      }, () => { fetchTeams(session.id); })
+        filter: `game_session_id=eq.${sessionId}`,
+      }, () => { fetchTeams(sessionId); })
       .on('postgres_changes', {
         event: '*', schema: 'public', table: 'game_sessions',
-        filter: `id=eq.${session.id}`,
+        filter: `id=eq.${sessionId}`,
       }, (payload) => {
         const updated = payload.new as GameSession;
+        const prevSession = sessionRef.current;
         setSession(updated);
-        // ゲーム終了を検知したら結果ページへ遷移
+        sessionRef.current = updated;
+
         if (updated.status === 'finished') {
           setTimeout(() => {
             router.push(`/results/${gameCode}`);
           }, 2000);
+          return;
         }
-      })
-      .on('postgres_changes', {
-        event: 'INSERT', schema: 'public', table: 'turn_events',
-        filter: `game_session_id=eq.${session.id}`,
-      }, (payload) => {
-        handleTurnEvent(payload.new as any);
+
+        // current_turn_team_id が変わったらturnStateをリセット
+        if (prevSession && updated.current_turn_team_id !== prevSession.current_turn_team_id) {
+          setTurnState(INITIAL_TURN_STATE);
+        }
       })
       .on('system', {}, (payload: any) => {
         if (payload?.extension === 'system' && payload?.message === 'disconnected') {
@@ -364,13 +386,13 @@ export default function PlayPage() {
         return;
       }
 
-      // 既に終了しているゲームは結果画面にリダイレクト
       if (sess.status === 'finished') {
         router.push(`/results/${gameCode}`);
         return;
       }
 
       setSession(sess);
+      sessionRef.current = sess;
 
       const { data: gs } = await supabase
         .from('game_sets').select('*').eq('id', sess.game_set_id).single();
@@ -384,6 +406,9 @@ export default function PlayPage() {
       setCells(cellsRes.data ?? []);
       setQuizzes(quizzesRes.data ?? []);
       setActions(actionsRes.data ?? []);
+      cellsRef.current = cellsRes.data ?? [];
+      quizzesRef.current = quizzesRes.data ?? [];
+      actionsRef.current = actionsRes.data ?? [];
 
       await fetchTeams(sess.id);
     } catch (err) {
@@ -396,64 +421,27 @@ export default function PlayPage() {
     const { data } = await supabaseRef.current
       .from('teams').select('*').eq('game_session_id', sessionId)
       .order('turn_order');
-    setTeams(data ?? []);
-  }
-
-  function handleTurnEvent(event: any) {
-    const { event_type, payload } = event;
-    switch (event_type) {
-      case 'dice_roll':
-        setTurnState((prev) => ({
-          ...prev,
-          phase: 'moving',
-          diceValue: payload.dice_value,
-          targetPosition: payload.target_position,
-        }));
-        setTimeout(() => {
-          fetchTeams(session?.id ?? '');
-          const cell = getCellByNumber(cells, payload.target_position);
-          if (cell?.quiz_id) {
-            const quiz = quizzes.find((q) => q.id === cell.quiz_id);
-            setTurnState((prev) => ({
-              ...prev,
-              phase: 'quiz',
-              currentCell: cell,
-              currentQuiz: quiz ?? null,
-            }));
-          } else {
-            setTurnState((prev) => ({
-              ...prev,
-              phase: 'next',
-              currentCell: cell ?? null,
-            }));
-            setTimeout(() => advanceTurn(), 1500);
-          }
-        }, 1200);
-        break;
-      case 'answer':
-        setTurnState((prev) => ({
-          ...prev,
-          phase: 'result',
-          selectedAnswer: payload.selected,
-          isCorrect: payload.is_correct,
-        }));
-        break;
-      case 'action':
-        fetchTeams(session?.id ?? '');
-        break;
-    }
+    const t = data ?? [];
+    setTeams(t);
+    teamsRef.current = t;
   }
 
   async function handleRoll() {
-    if (!session || !currentTurnTeam || rolling) return;
+    const currentSession = sessionRef.current;
+    const currentCells = cellsRef.current;
+    const currentQuizzes = quizzesRef.current;
+    const currentTeams = teamsRef.current;
+    const currentTeam = currentTeams.find((t) => t.id === currentSession?.current_turn_team_id);
+
+    if (!currentSession || !currentTeam || rolling) return;
 
     setRolling(true);
 
     const animDuration = 800;
     setTimeout(async () => {
       const diceValue = rollDice(gameSet?.dice_sides ?? 6, gameSet?.dice_count ?? 1);
-      const maxCell = Math.max(...cells.map((c) => c.cell_number));
-      const targetPos = calculateTargetPosition(currentTurnTeam.current_position, diceValue, maxCell);
+      const maxCell = Math.max(...currentCells.map((c) => c.cell_number));
+      const targetPos = calculateTargetPosition(currentTeam.current_position, diceValue, maxCell);
 
       setRolling(false);
       setTurnState((prev) => ({
@@ -468,37 +456,62 @@ export default function PlayPage() {
       await supabase
         .from('teams')
         .update({ current_position: targetPos })
-        .eq('id', currentTurnTeam.id);
+        .eq('id', currentTeam.id);
 
       await supabase.from('turn_events').insert({
-        game_session_id: session.id,
-        team_id: currentTurnTeam.id,
-        turn_number: session.turn_number,
+        game_session_id: currentSession.id,
+        team_id: currentTeam.id,
+        turn_number: currentSession.turn_number,
         event_type: 'dice_roll',
         payload: {
           dice_value: diceValue,
-          from_position: currentTurnTeam.current_position,
+          from_position: currentTeam.current_position,
           target_position: targetPos,
         },
       });
 
-      setTimeout(() => {
-        fetchTeams(session.id);
-        const cell = getCellByNumber(cells, targetPos);
+      setTimeout(async () => {
+        await fetchTeams(currentSession.id);
 
         if (targetPos >= maxCell) {
-          handleGoal(currentTurnTeam);
+          await handleGoal(currentTeam, currentSession);
           return;
         }
 
-        if (cell?.quiz_id) {
-          const quiz = quizzes.find((q) => q.id === cell.quiz_id);
-          setTurnState((prev) => ({
-            ...prev,
-            phase: 'quiz',
-            currentCell: cell,
-            currentQuiz: quiz ?? null,
-          }));
+        const cell = getCellByNumber(currentCells, targetPos);
+
+        if (cell && cell.quiz_id) {
+          const quiz = currentQuizzes.find((q) => q.id === cell.quiz_id);
+          if (quiz) {
+            setTurnState((prev) => ({
+              ...prev,
+              phase: 'quiz',
+              currentCell: cell,
+              currentQuiz: quiz,
+            }));
+          } else {
+            setTurnState((prev) => ({
+              ...prev,
+              phase: 'next',
+              currentCell: cell,
+            }));
+            setTimeout(() => advanceTurn(), 1500);
+          }
+        } else if (cell && (cell.cell_type === 'イベント' || cell.cell_type === 'ボーナス') && cell.correct_action_id) {
+          const action = actionsRef.current.find((a) => a.id === cell.correct_action_id);
+          if (action) {
+            setTurnState((prev) => ({
+              ...prev,
+              phase: 'result',
+              currentCell: cell,
+              isCorrect: true,
+              actionToApply: action,
+              actionMessage: action.message,
+            }));
+          } else {
+            setTurnState((prev) => ({ ...prev, phase: 'next', currentCell: cell }));
+            setTimeout(() => advanceTurn(), 1500);
+          }
         } else {
           setTurnState((prev) => ({
             ...prev,
@@ -512,7 +525,9 @@ export default function PlayPage() {
   }
 
   async function handleAnswer(choice: string) {
-    if (!session || !currentTurnTeam || !turnState.currentQuiz || !turnState.currentCell) return;
+    const currentSession = sessionRef.current;
+    const currentTeam = teamsRef.current.find((t) => t.id === currentSession?.current_turn_team_id);
+    if (!currentSession || !currentTeam || !turnState.currentQuiz || !turnState.currentCell) return;
 
     const isCorrect = choice === turnState.currentQuiz.answer;
     const isTimeout = choice === 'TIMEOUT';
@@ -520,19 +535,19 @@ export default function PlayPage() {
     if (isCorrect) {
       await supabaseRef.current
         .from('teams')
-        .update({ correct_count: currentTurnTeam.correct_count + 1 })
-        .eq('id', currentTurnTeam.id);
+        .update({ correct_count: currentTeam.correct_count + 1 })
+        .eq('id', currentTeam.id);
     }
 
     const actionId = isCorrect
       ? turnState.currentCell.correct_action_id
       : turnState.currentCell.wrong_action_id;
-    const action = actionId ? actions.find((a) => a.id === actionId) ?? null : null;
+    const action = actionId ? actionsRef.current.find((a) => a.id === actionId) ?? null : null;
 
     await supabaseRef.current.from('turn_events').insert({
-      game_session_id: session.id,
-      team_id: currentTurnTeam.id,
-      turn_number: session.turn_number,
+      game_session_id: currentSession.id,
+      team_id: currentTeam.id,
+      turn_number: currentSession.turn_number,
       event_type: 'answer',
       payload: {
         quiz_id: turnState.currentQuiz.id,
@@ -554,22 +569,24 @@ export default function PlayPage() {
   }
 
   async function handleResultContinue() {
-    if (!session || !currentTurnTeam) return;
+    const currentSession = sessionRef.current;
+    const currentTeam = teamsRef.current.find((t) => t.id === currentSession?.current_turn_team_id);
+    if (!currentSession || !currentTeam) return;
 
     const action = turnState.actionToApply;
     if (action) {
-      const maxCell = Math.max(...cells.map((c) => c.cell_number));
-      const updates = applyAction(currentTurnTeam, action, maxCell);
+      const maxCell = Math.max(...cellsRef.current.map((c) => c.cell_number));
+      const updates = applyAction(currentTeam, action, maxCell);
 
       await supabaseRef.current
         .from('teams')
         .update(updates)
-        .eq('id', currentTurnTeam.id);
+        .eq('id', currentTeam.id);
 
       await supabaseRef.current.from('turn_events').insert({
-        game_session_id: session.id,
-        team_id: currentTurnTeam.id,
-        turn_number: session.turn_number,
+        game_session_id: currentSession.id,
+        team_id: currentTeam.id,
+        turn_number: currentSession.turn_number,
         event_type: 'action',
         payload: {
           action_code: action.action_code,
@@ -582,27 +599,30 @@ export default function PlayPage() {
       if (updates.is_finished) {
         await supabaseRef.current
           .from('teams')
-          .update({ is_finished: true, finished_turn: session.turn_number })
-          .eq('id', currentTurnTeam.id);
+          .update({ is_finished: true, finished_turn: currentSession.turn_number })
+          .eq('id', currentTeam.id);
       }
     }
 
-    await fetchTeams(session.id);
+    await fetchTeams(currentSession.id);
     setTimeout(() => advanceTurn(), 500);
   }
 
-  async function handleGoal(team: Team) {
-    if (!session) return;
+  async function handleGoal(team: Team, currentSession?: GameSession) {
+    const sess = currentSession ?? sessionRef.current;
+    if (!sess) return;
+    const maxCell = Math.max(...cellsRef.current.map((c) => c.cell_number));
+
     await supabaseRef.current
       .from('teams')
       .update({
         is_finished: true,
-        finished_turn: session.turn_number,
-        current_position: Math.max(...cells.map((c) => c.cell_number)),
+        finished_turn: sess.turn_number,
+        current_position: maxCell,
       })
       .eq('id', team.id);
 
-    await fetchTeams(session.id);
+    await fetchTeams(sess.id);
     setTurnState((prev) => ({
       ...prev,
       phase: 'result',
@@ -612,31 +632,40 @@ export default function PlayPage() {
     }));
   }
 
+  // advanceTurn - DBから最新のsessionを取得して使う（stale closure 回避）
   async function advanceTurn() {
-    if (!session) return;
+    const supabase = supabaseRef.current;
 
-    const latestTeams = (await supabaseRef.current
-      .from('teams').select('*').eq('game_session_id', session.id)
-      .order('turn_order')).data ?? [];
+    const { data: latestSession } = await supabase
+      .from('game_sessions')
+      .select('*')
+      .eq('game_code', gameCode)
+      .single();
+
+    if (!latestSession) return;
+
+    const { data: latestTeamsData } = await supabase
+      .from('teams').select('*').eq('game_session_id', latestSession.id)
+      .order('turn_order');
+    const latestTeams = latestTeamsData ?? [];
 
     if (isGameFinished(latestTeams)) {
-      await supabaseRef.current
+      await supabase
         .from('game_sessions')
         .update({ status: 'finished', finished_at: new Date().toISOString() })
-        .eq('id', session.id);
-      // 結果ページへ遷移
+        .eq('id', latestSession.id);
       setTimeout(() => router.push(`/results/${gameCode}`), 2000);
       return;
     }
 
-    const currentTeamId = session.current_turn_team_id ?? '';
+    const currentTeamId = latestSession.current_turn_team_id ?? '';
     const nextTeam = getNextTurnTeam(latestTeams, currentTeamId);
 
     if (!nextTeam) {
-      await supabaseRef.current
+      await supabase
         .from('game_sessions')
         .update({ status: 'finished', finished_at: new Date().toISOString() })
-        .eq('id', session.id);
+        .eq('id', latestSession.id);
       setTimeout(() => router.push(`/results/${gameCode}`), 2000);
       return;
     }
@@ -644,54 +673,59 @@ export default function PlayPage() {
     if (nextTeam.id !== currentTeamId) {
       const currentTeam = latestTeams.find((t) => t.id === currentTeamId);
       if (currentTeam?.roll_again) {
-        await supabaseRef.current
+        await supabase
           .from('teams')
           .update({ roll_again: false })
           .eq('id', currentTeamId);
       }
     }
 
-    for (const t of latestTeams) {
-      if (t.pause_turns > 0 && t.id === nextTeam.id) {
-        await supabaseRef.current
-          .from('teams')
-          .update({ pause_turns: t.pause_turns - 1 })
-          .eq('id', t.id);
-        const afterNext = getNextTurnTeam(latestTeams.map((tt) =>
-          tt.id === t.id ? { ...tt, pause_turns: tt.pause_turns - 1 } : tt
-        ), nextTeam.id);
-        if (afterNext && afterNext.id !== nextTeam.id) {
-          await supabaseRef.current
-            .from('game_sessions')
-            .update({
-              current_turn_team_id: afterNext.id,
-              turn_number: session.turn_number + 1,
-            })
-            .eq('id', session.id);
-          setTurnState(INITIAL_TURN_STATE);
-          return;
-        }
+    if (nextTeam.pause_turns > 0) {
+      await supabase
+        .from('teams')
+        .update({ pause_turns: nextTeam.pause_turns - 1 })
+        .eq('id', nextTeam.id);
+
+      const updatedTeams = latestTeams.map((t) =>
+        t.id === nextTeam.id ? { ...t, pause_turns: t.pause_turns - 1 } : t
+      );
+      const afterNext = getNextTurnTeam(updatedTeams, nextTeam.id);
+
+      if (afterNext && afterNext.id !== nextTeam.id) {
+        await supabase
+          .from('game_sessions')
+          .update({
+            current_turn_team_id: afterNext.id,
+            turn_number: latestSession.turn_number + 1,
+          })
+          .eq('id', latestSession.id);
+        setTurnState(INITIAL_TURN_STATE);
+        return;
       }
     }
 
-    await supabaseRef.current
+    await supabase
       .from('game_sessions')
       .update({
         current_turn_team_id: nextTeam.id,
-        turn_number: session.turn_number + 1,
+        turn_number: latestSession.turn_number + 1,
       })
-      .eq('id', session.id);
+      .eq('id', latestSession.id);
 
+    setSession((prev) => prev ? {
+      ...prev,
+      current_turn_team_id: nextTeam.id,
+      turn_number: latestSession.turn_number + 1,
+    } : prev);
     setTurnState(INITIAL_TURN_STATE);
   }
 
   const currentTurnTeam = teams.find((t) => t.id === session?.current_turn_team_id);
   const isMyTurn = !isHost && myTeamId === session?.current_turn_team_id;
   const canRoll = (isHost || isMyTurn) && turnState.phase === 'roll' && !rolling;
-  const canAnswer = isMyTurn && turnState.phase === 'quiz';
+  const canAnswer = (isMyTurn || isHost) && turnState.phase === 'quiz';
   const canContinue = isHost || isMyTurn;
 
-  // ゲーム終了 → 結果ページへの中間画面
   if (session?.status === 'finished') {
     return (
       <div className="flex min-h-screen flex-col items-center justify-center bg-gradient-to-b from-amber-50 to-white p-6 dark:from-gray-950 dark:to-gray-900">
@@ -873,5 +907,21 @@ export default function PlayPage() {
         />
       )}
     </div>
+  );
+}
+
+// === ページコンポーネント（Suspense でラップ） ===
+export default function PlayPage() {
+  return (
+    <Suspense fallback={
+      <div className="flex min-h-screen items-center justify-center">
+        <div className="text-center">
+          <div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-4 border-indigo-500 border-t-transparent" />
+          <p className="text-gray-500">ゲームを読み込み中...</p>
+        </div>
+      </div>
+    }>
+      <PlayContent />
+    </Suspense>
   );
 }
