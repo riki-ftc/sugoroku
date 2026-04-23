@@ -130,12 +130,21 @@ export default function AdminPage() {
     <div className="space-y-8">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">管理画面ホーム</h1>
-        <a
-          href="/admin/import"
-          className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700"
-        >
-          📥 Excelインポート
-        </a>
+        <div className="flex gap-2">
+          <a
+            href="/template/すごろくマスター管理テンプレート.xlsx"
+            download
+            className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+          >
+            📄 テンプレートDL
+          </a>
+          <a
+            href="/admin/import"
+            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700"
+          >
+            📥 Excelインポート
+          </a>
+        </div>
       </div>
 
       {/* ゲームセット一覧 */}
@@ -156,6 +165,13 @@ export default function AdminPage() {
             <p className="mt-1 text-sm text-gray-400">
               「Excelインポート」からテンプレートをアップロードしてください
             </p>
+            <a
+              href="/template/すごろくマスター管理テンプレート.xlsx"
+              download
+              className="mt-3 inline-block text-sm text-blue-600 hover:underline"
+            >
+              📄 テンプレートをダウンロード
+            </a>
           </div>
         )}
 
