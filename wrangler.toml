@@ -1,0 +1,13 @@
+name = "sugoroku"
+main = ".open-next/worker.js"
+compatibility_date = "2026-04-22"
+compatibility_flags = [ "nodejs_compat" ]
+
+[assets]
+directory = ".open-next/assets"
+binding = "ASSETS"
+
+[vars]
+# 環境変数はCloudflareダッシュボードで設定
+# NEXT_PUBLIC_SUPABASE_URL = ""
+# NEXT_PUBLIC_SUPABASE_ANON_KEY = ""
