@@ -95,26 +95,26 @@ function QuizModal({ quiz, timeLimit, onAnswer, readOnly }: { quiz: Quiz; timeLi
   );
 }
 
-function ResultModal({ isCorrect, explanation, action, actionMessage, onContinue, canContinue, autoClose }: { isCorrect: boolean | null; explanation: string | null; action: Action | null; actionMessage: string | null; onContinue: () => void; canContinue: boolean; autoClose?: boolean }) {
-  const [countdown, setCountdown] = useState(5);
+// ★ ResultModal: autoCloseSeconds で自動消去、canContinue でボタン表示
+function ResultModal({ isCorrect, explanation, action, actionMessage, onContinue, canContinue, autoCloseSeconds }: {
+  isCorrect: boolean | null; explanation: string | null; action: Action | null; actionMessage: string | null;
+  onContinue: () => void; canContinue: boolean; autoCloseSeconds?: number;
+}) {
+  const [countdown, setCountdown] = useState(autoCloseSeconds ?? 0);
   const calledRef = useRef(false);
 
   useEffect(() => {
-    if (!autoClose) return;
+    if (!autoCloseSeconds || autoCloseSeconds <= 0) return;
     calledRef.current = false;
-    setCountdown(5);
+    setCountdown(autoCloseSeconds);
     const timer = setInterval(() => {
       setCountdown((prev) => {
-        if (prev <= 1) {
-          clearInterval(timer);
-          if (!calledRef.current) { calledRef.current = true; onContinue(); }
-          return 0;
-        }
+        if (prev <= 1) { clearInterval(timer); if (!calledRef.current) { calledRef.current = true; onContinue(); } return 0; }
         return prev - 1;
       });
     }, 1000);
     return () => clearInterval(timer);
-  }, [autoClose, onContinue]);
+  }, [autoCloseSeconds, onContinue]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
@@ -123,10 +123,13 @@ function ResultModal({ isCorrect, explanation, action, actionMessage, onContinue
         <h3 className={`mb-2 text-2xl font-bold ${isCorrect === null ? 'text-gray-700' : isCorrect ? 'text-green-600' : 'text-red-600'}`}>{isCorrect === null ? '時間切れ！' : isCorrect ? '正解！' : '不正解...'}</h3>
         {explanation && <p className="mb-4 text-sm text-gray-600 dark:text-gray-400">{explanation}</p>}
         {(action || actionMessage) && (<div className="mb-4 rounded-lg bg-indigo-50 p-3 dark:bg-indigo-950"><p className="font-medium text-indigo-700 dark:text-indigo-300">{actionMessage ?? action?.message ?? `${action?.action_type}${action?.value ? ` ${action.value}マス` : ''}`}</p></div>)}
-        {autoClose ? (
-          <p className="mt-2 text-sm text-gray-400">{countdown}秒後に自動で進みます...</p>
-        ) : canContinue ? (
-          <button onClick={onContinue} className="mt-2 rounded-lg bg-indigo-600 px-8 py-3 font-bold text-white shadow-lg hover:bg-indigo-700">次へ</button>
+        {canContinue ? (
+          <div>
+            <button onClick={() => { calledRef.current = true; onContinue(); }} className="mt-2 rounded-lg bg-indigo-600 px-8 py-3 font-bold text-white shadow-lg hover:bg-indigo-700">次へ</button>
+            {autoCloseSeconds && autoCloseSeconds > 0 && <p className="mt-2 text-xs text-gray-400">{countdown}秒後に自動で進みます</p>}
+          </div>
+        ) : autoCloseSeconds && autoCloseSeconds > 0 ? (
+          <p className="mt-2 text-sm text-gray-400">{countdown}秒後に自動で閉じます...</p>
         ) : (
           <p className="mt-2 text-sm text-gray-400 animate-pulse">プレイヤーの操作を待っています...</p>
         )}
@@ -160,6 +163,7 @@ function PlayContent() {
   const [myTeamId, setMyTeamId] = useState<string | null>(null);
   const [connectionLost, setConnectionLost] = useState(false);
   const [isGoalResult, setIsGoalResult] = useState(false);
+  const [realtimeReady, setRealtimeReady] = useState(false);
 
   const supabaseRef = useRef(createClient());
   const sessionRef = useRef<GameSession | null>(null);
@@ -169,6 +173,7 @@ function PlayContent() {
   const actionsRef = useRef<Action[]>([]);
   const isActingRef = useRef(false);
   const channelRef = useRef<ReturnType<ReturnType<typeof createClient>['channel']> | null>(null);
+  const sessionIdRef = useRef<string>('');
 
   useEffect(() => { sessionRef.current = session; }, [session]);
   useEffect(() => { teamsRef.current = teams; }, [teams]);
@@ -183,61 +188,72 @@ function PlayContent() {
     }
   }, [gameCode, isHost]);
 
-  // ★ loadGameData + Realtime購読を一体化
+  // ★ ステップ1: まずsession取得→Realtime購読開始→SUBSCRIBED待ち→データ取得
   useEffect(() => {
     let cancelled = false;
-    loadGameDataAndSubscribe(cancelled);
+    initGame(cancelled);
     return () => {
       cancelled = true;
-      if (channelRef.current) {
-        supabaseRef.current.removeChannel(channelRef.current);
-        channelRef.current = null;
-      }
+      if (channelRef.current) { supabaseRef.current.removeChannel(channelRef.current); channelRef.current = null; }
     };
   }, [gameCode]);
 
-  async function loadGameDataAndSubscribe(cancelled: boolean) {
+  async function initGame(cancelled: boolean) {
     setLoading(true);
     const supabase = supabaseRef.current;
-    try {
-      const { data: sess, error: sessErr } = await supabase.from('game_sessions').select('*').eq('game_code', gameCode).single();
-      if (sessErr || !sess) { setError('ゲームセッションが見つかりません。コードを確認してください。'); setLoading(false); return; }
-      if (sess.status === 'finished') { router.push(`/results/${gameCode}`); return; }
-      if (cancelled) return;
-      setSession(sess); sessionRef.current = sess;
-      const { data: gs } = await supabase.from('game_sets').select('*').eq('id', sess.game_set_id).single();
-      setGameSet(gs ?? null);
-      const [cellsRes, quizzesRes, actionsRes] = await Promise.all([
-        supabase.from('cells').select('*').eq('game_set_id', sess.game_set_id).order('cell_number'),
-        supabase.from('quizzes').select('*').eq('game_set_id', sess.game_set_id),
-        supabase.from('actions').select('*').eq('game_set_id', sess.game_set_id),
-      ]);
-      if (cancelled) return;
-      setCells(cellsRes.data ?? []); setQuizzes(quizzesRes.data ?? []); setActions(actionsRes.data ?? []);
-      cellsRef.current = cellsRes.data ?? []; quizzesRef.current = quizzesRes.data ?? []; actionsRef.current = actionsRes.data ?? [];
-      await fetchTeams(sess.id);
 
-      // ★ Realtime購読をここで開始（sessionIdが確定した後）
-      if (channelRef.current) { supabase.removeChannel(channelRef.current); }
-      const sessionId = sess.id;
-      const channel = supabase
-        .channel(`play:${gameCode}:${sessionId}`)
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'teams', filter: `game_session_id=eq.${sessionId}` }, () => { fetchTeams(sessionId); })
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'game_sessions', filter: `id=eq.${sessionId}` }, (payload) => {
-          const updated = payload.new as GameSession;
-          const prevSession = sessionRef.current;
-          setSession(updated); sessionRef.current = updated;
-          if (updated.status === 'finished') { setTimeout(() => router.push(`/results/${gameCode}`), 2000); return; }
-          if (prevSession && updated.current_turn_team_id !== prevSession.current_turn_team_id) { setTurnState(INITIAL_TURN_STATE); setIsGoalResult(false); isActingRef.current = false; }
-        })
-        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'turn_events', filter: `game_session_id=eq.${sessionId}` }, (payload) => {
-          if (isActingRef.current) return;
-          handleRemoteTurnEvent(payload.new as any);
-        })
-        .on('system', {}, (payload: any) => { if (payload?.extension === 'system' && payload?.message === 'disconnected') setConnectionLost(true); })
-        .subscribe((status) => { if (status === 'SUBSCRIBED') setConnectionLost(false); });
-      channelRef.current = channel;
-    } catch { setError('データの読み込み中にエラーが発生しました。ページを再読み込みしてください。'); }
+    // 1. まずsessionだけ取得
+    const { data: sess, error: sessErr } = await supabase.from('game_sessions').select('*').eq('game_code', gameCode).single();
+    if (sessErr || !sess) { setError('ゲームセッションが見つかりません。コードを確認してください。'); setLoading(false); return; }
+    if (sess.status === 'finished') { router.push(`/results/${gameCode}`); return; }
+    if (cancelled) return;
+    sessionIdRef.current = sess.id;
+
+    // 2. Realtime購読を開始して、SUBSCRIBEDを待つ
+    if (channelRef.current) { supabase.removeChannel(channelRef.current); }
+    const sessionId = sess.id;
+    const channel = supabase
+      .channel(`play:${gameCode}:${Date.now()}`) // ユニークなチャネル名
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'teams', filter: `game_session_id=eq.${sessionId}` }, () => { fetchTeams(sessionId); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'game_sessions', filter: `id=eq.${sessionId}` }, (payload) => {
+        const updated = payload.new as GameSession;
+        const prevSession = sessionRef.current;
+        setSession(updated); sessionRef.current = updated;
+        if (updated.status === 'finished') { setTimeout(() => router.push(`/results/${gameCode}`), 2000); return; }
+        if (prevSession && updated.current_turn_team_id !== prevSession.current_turn_team_id) { setTurnState(INITIAL_TURN_STATE); setIsGoalResult(false); isActingRef.current = false; }
+      })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'turn_events', filter: `game_session_id=eq.${sessionId}` }, (payload) => {
+        if (isActingRef.current) return;
+        handleRemoteTurnEvent(payload.new as any);
+      })
+      .on('system', {}, (payload: any) => { if (payload?.extension === 'system' && payload?.message === 'disconnected') setConnectionLost(true); })
+      .subscribe(async (status) => {
+        if (status === 'SUBSCRIBED') {
+          setConnectionLost(false);
+          setRealtimeReady(true);
+          // 3. SUBSCRIBEDになってから全データを取得（この時点からRealtimeイベントを逃さない）
+          await loadAllGameData(sess);
+        }
+      });
+    channelRef.current = channel;
+  }
+
+  async function loadAllGameData(sess: GameSession) {
+    const supabase = supabaseRef.current;
+    setSession(sess); sessionRef.current = sess;
+    const { data: gs } = await supabase.from('game_sets').select('*').eq('id', sess.game_set_id).single();
+    setGameSet(gs ?? null);
+    const [cellsRes, quizzesRes, actionsRes] = await Promise.all([
+      supabase.from('cells').select('*').eq('game_set_id', sess.game_set_id).order('cell_number'),
+      supabase.from('quizzes').select('*').eq('game_set_id', sess.game_set_id),
+      supabase.from('actions').select('*').eq('game_set_id', sess.game_set_id),
+    ]);
+    setCells(cellsRes.data ?? []); setQuizzes(quizzesRes.data ?? []); setActions(actionsRes.data ?? []);
+    cellsRef.current = cellsRes.data ?? []; quizzesRef.current = quizzesRes.data ?? []; actionsRef.current = actionsRes.data ?? [];
+    // 最新のsessionも再取得（subscribe中に変わった可能性）
+    const { data: latestSess } = await supabase.from('game_sessions').select('*').eq('id', sess.id).single();
+    if (latestSess) { setSession(latestSess); sessionRef.current = latestSess; }
+    await fetchTeams(sess.id);
     setLoading(false);
   }
 
@@ -249,7 +265,7 @@ function PlayContent() {
       case 'dice_roll': {
         setTurnState((prev) => ({ ...prev, phase: 'moving', diceValue: payload.dice_value, targetPosition: payload.target_position }));
         setTimeout(() => {
-          fetchTeams(sessionRef.current?.id ?? '');
+          fetchTeams(sessionIdRef.current);
           const maxCell = Math.max(...currentCells.map((c) => c.cell_number));
           if (payload.target_position >= maxCell) {
             const team = teamsRef.current.find((t) => t.id === team_id);
@@ -276,7 +292,7 @@ function PlayContent() {
         setTurnState((prev) => ({ ...prev, phase: 'result', selectedAnswer: payload.selected, isCorrect: payload.is_timeout ? null : payload.is_correct, actionToApply: action, actionMessage: action?.message ?? null }));
         break;
       }
-      case 'action': { fetchTeams(sessionRef.current?.id ?? ''); break; }
+      case 'action': { fetchTeams(sessionIdRef.current); break; }
     }
   }
 
@@ -295,7 +311,6 @@ function PlayContent() {
     if (!currentSession || !currentTeam || rolling) return;
     isActingRef.current = true;
     setRolling(true);
-    const animDuration = 800;
     setTimeout(async () => {
       const diceValue = rollDice(gameSet?.dice_sides ?? 6, gameSet?.dice_count ?? 1);
       const maxCell = Math.max(...currentCells.map((c) => c.cell_number));
@@ -319,7 +334,7 @@ function PlayContent() {
           else { setTurnState((prev) => ({ ...prev, phase: 'next', currentCell: cell })); isActingRef.current = false; setTimeout(() => advanceTurn(), 1500); }
         } else { setTurnState((prev) => ({ ...prev, phase: 'next', currentCell: cell ?? null })); isActingRef.current = false; setTimeout(() => advanceTurn(), 1500); }
       }, 1200);
-    }, animDuration);
+    }, 800);
   }
 
   async function handleAnswer(choice: string) {
@@ -336,13 +351,17 @@ function PlayContent() {
     setTurnState((prev) => ({ ...prev, phase: 'result', selectedAnswer: choice, isCorrect: isTimeout ? null : isCorrect, actionToApply: action, actionMessage: action?.message ?? null }));
   }
 
+  // ★ リモートの結果モーダル自動消去用
+  function dismissRemoteResult() {
+    setTurnState(INITIAL_TURN_STATE);
+    setIsGoalResult(false);
+  }
+
   async function handleResultContinue() {
     if (isHost) return;
     const currentSession = sessionRef.current;
     const currentTeam = teamsRef.current.find((t) => t.id === currentSession?.current_turn_team_id);
     if (!currentSession || !currentTeam) return;
-
-    // ★ ゴール結果の場合はアクション不要、直接 advanceTurn
     if (isGoalResult) {
       setIsGoalResult(false);
       isActingRef.current = false;
@@ -350,14 +369,12 @@ function PlayContent() {
       setTimeout(() => advanceTurn(), 500);
       return;
     }
-
     const action = turnState.actionToApply;
     if (action) {
       const maxCell = Math.max(...cellsRef.current.map((c) => c.cell_number));
       const updates = applyAction(currentTeam, action, maxCell);
       await supabaseRef.current.from('teams').update(updates).eq('id', currentTeam.id);
       await supabaseRef.current.from('turn_events').insert({ game_session_id: currentSession.id, team_id: currentTeam.id, turn_number: currentSession.turn_number, event_type: 'action', payload: { action_code: action.action_code, action_type: action.action_type, value: action.value, updates } });
-      // ★ アクションでゴール到達した場合
       if (updates.is_finished) {
         await supabaseRef.current.from('teams').update({ is_finished: true, finished_turn: currentSession.turn_number }).eq('id', currentTeam.id);
         await fetchTeams(currentSession.id);
@@ -407,9 +424,7 @@ function PlayContent() {
       return;
     }
     const currentTeam = latestTeams.find((t) => t.id === currentTeamId);
-    if (currentTeam?.roll_again) {
-      await supabase.from('teams').update({ roll_again: false }).eq('id', currentTeamId);
-    }
+    if (currentTeam?.roll_again) { await supabase.from('teams').update({ roll_again: false }).eq('id', currentTeamId); }
     let targetTeam = nextTeam;
     const activeTeams = latestTeams.filter((t) => !t.is_finished).sort((a, b) => (a.turn_order ?? 0) - (b.turn_order ?? 0));
     let attempts = 0;
@@ -433,6 +448,13 @@ function PlayContent() {
   const canAnswer = isMyTurn && turnState.phase === 'quiz';
   const canContinue = isMyTurn;
 
+  // ★ 結果モーダルの自動消去ロジック
+  // - ゴール結果: 全員5秒で自動消去 + 操作者は手動でも消せる
+  // - 通常結果 + 自分のターン: 手動のみ
+  // - 通常結果 + 他人のターン/ホスト: 3秒で自動消去
+  const resultAutoClose = isGoalResult ? 5 : (!canContinue ? 3 : undefined);
+  const resultOnContinue = canContinue ? handleResultContinue : dismissRemoteResult;
+
   if (session?.status === 'finished') {
     return (<div className="flex min-h-screen flex-col items-center justify-center bg-gradient-to-b from-amber-50 to-white p-6 dark:from-gray-950 dark:to-gray-900"><div className="text-6xl mb-4">🏆</div><h1 className="mb-2 text-3xl font-bold">ゲーム終了！</h1><p className="mb-6 text-gray-500 animate-pulse">結果ページに移動します...</p><a href={`/results/${gameCode}`} className="rounded-lg bg-indigo-600 px-6 py-3 font-bold text-white hover:bg-indigo-700">結果を見る →</a></div>);
   }
@@ -440,7 +462,7 @@ function PlayContent() {
     return (<div className="flex min-h-screen items-center justify-center"><div className="text-center"><div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-4 border-indigo-500 border-t-transparent" /><p className="text-gray-500">ゲームを読み込み中...</p></div></div>);
   }
   if (error) {
-    return (<div className="flex min-h-screen flex-col items-center justify-center gap-4 p-6"><div className="text-4xl">😵</div><p className="text-red-600 font-medium">{error}</p><div className="flex gap-3"><button onClick={() => { setError(null); loadGameDataAndSubscribe(false); }} className="rounded-lg bg-indigo-600 px-6 py-2 font-medium text-white hover:bg-indigo-700">再読み込み</button><a href="/" className="rounded-lg border border-gray-300 px-6 py-2 font-medium text-gray-700 hover:bg-gray-50">トップへ</a></div></div>);
+    return (<div className="flex min-h-screen flex-col items-center justify-center gap-4 p-6"><div className="text-4xl">😵</div><p className="text-red-600 font-medium">{error}</p><div className="flex gap-3"><button onClick={() => { setError(null); initGame(false); }} className="rounded-lg bg-indigo-600 px-6 py-2 font-medium text-white hover:bg-indigo-700">再読み込み</button><a href="/" className="rounded-lg border border-gray-300 px-6 py-2 font-medium text-gray-700 hover:bg-gray-50">トップへ</a></div></div>);
   }
 
   return (
@@ -497,7 +519,7 @@ function PlayContent() {
         <QuizModal quiz={turnState.currentQuiz} timeLimit={gameSet?.answer_time_limit ?? 30} onAnswer={handleAnswer} readOnly={isHost || !canAnswer} />
       )}
       {turnState.phase === 'result' && (
-        <ResultModal isCorrect={turnState.isCorrect} explanation={turnState.currentQuiz?.explanation ?? null} action={turnState.actionToApply} actionMessage={turnState.actionMessage} onContinue={handleResultContinue} canContinue={canContinue} autoClose={isGoalResult} />
+        <ResultModal isCorrect={turnState.isCorrect} explanation={turnState.currentQuiz?.explanation ?? null} action={turnState.actionToApply} actionMessage={turnState.actionMessage} onContinue={resultOnContinue} canContinue={canContinue} autoCloseSeconds={resultAutoClose} />
       )}
     </div>
   );
