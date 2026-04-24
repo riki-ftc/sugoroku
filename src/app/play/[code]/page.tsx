@@ -1,7 +1,4 @@
-// play/[code]/page.tsx – ポーリングフォールバック追加版
-// 長いファイルのため、PlayContent内のuseEffect群とfetchTeamsのみ変更。
-// UIコンポーネント（DiceDisplay, GameBoard, QuizModal, ResultModal, ConnectionBanner）は前回と同一。
-
+// 前回安定版に、サイレントリロードによるターン同期を追加
 'use client';
 
 import { useEffect, useState, useRef, Suspense } from 'react';
@@ -168,8 +165,8 @@ function PlayContent() {
   const quizzesRef = useRef<Quiz[]>([]);
   const actionsRef = useRef<Action[]>([]);
   const isActingRef = useRef(false);
-  const channelRef = useRef<ReturnType<ReturnType<typeof createClient>['channel']> | null>(null);
   const sessionIdRef = useRef<string>('');
+  const lastKnownTurnRef = useRef<number>(0);
 
   useEffect(() => { sessionRef.current = session; }, [session]);
   useEffect(() => { teamsRef.current = teams; }, [teams]);
@@ -184,137 +181,56 @@ function PlayContent() {
     }
   }, [gameCode, isHost]);
 
-  // ★ 初期化: session取得 → Realtime購読 → SUBSCRIBED後にデータ取得
-  useEffect(() => {
-    let cancelled = false;
-    initGame(cancelled);
-    return () => {
-      cancelled = true;
-      if (channelRef.current) { supabaseRef.current.removeChannel(channelRef.current); channelRef.current = null; }
-    };
-  }, [gameCode]);
+  // 初期データ取得
+  useEffect(() => { loadGameData(); }, [gameCode]);
 
-  // ★★★ ポーリングフォールバック: 3秒ごとにsessionとteamsをチェック ★★★
+  // ★★★ サイレントリロード: 2秒ごとにturn_numberをチェック、変わっていたらリロード ★★★
   useEffect(() => {
     if (!sessionIdRef.current || loading) return;
-    const pollInterval = setInterval(async () => {
-      if (isActingRef.current) return; // 操作中はスキップ
-      const supabase = supabaseRef.current;
-      const { data: polledSession } = await supabase
-        .from('game_sessions').select('id, current_turn_team_id, turn_number, status')
-        .eq('id', sessionIdRef.current).single();
-      if (!polledSession) return;
-      const prev = sessionRef.current;
-      if (polledSession.status === 'finished' && prev?.status !== 'finished') {
-        setSession((p) => p ? { ...p, status: 'finished' } : p);
-        sessionRef.current = { ...prev!, status: 'finished' } as GameSession;
-        setTimeout(() => router.push(`/results/${gameCode}`), 2000);
-        return;
-      }
-      // current_turn_team_id か turn_number が変わっていたら更新
-      if (prev && (polledSession.current_turn_team_id !== prev.current_turn_team_id || polledSession.turn_number !== prev.turn_number)) {
-        setSession((p) => p ? { ...p, current_turn_team_id: polledSession.current_turn_team_id, turn_number: polledSession.turn_number } : p);
-        sessionRef.current = { ...prev, current_turn_team_id: polledSession.current_turn_team_id, turn_number: polledSession.turn_number } as GameSession;
-        setTurnState(INITIAL_TURN_STATE);
-        setIsGoalResult(false);
-        isActingRef.current = false;
-        // teamsも更新
-        await fetchTeams(sessionIdRef.current);
-      }
-    }, 3000);
-    return () => clearInterval(pollInterval);
+    const interval = setInterval(async () => {
+      if (isActingRef.current) return; // 自分が操作中はスキップ
+      try {
+        const { data } = await supabaseRef.current
+          .from('game_sessions')
+          .select('turn_number, status, current_turn_team_id')
+          .eq('id', sessionIdRef.current)
+          .single();
+        if (!data) return;
+        if (data.status === 'finished') {
+          window.location.href = `/results/${gameCode}`;
+          return;
+        }
+        // turn_numberまたはcurrent_turn_team_idが変わっていたらサイレントリロード
+        if (data.turn_number !== lastKnownTurnRef.current || data.current_turn_team_id !== sessionRef.current?.current_turn_team_id) {
+          window.location.reload();
+        }
+      } catch {}
+    }, 2000);
+    return () => clearInterval(interval);
   }, [loading, gameCode]);
 
-  async function initGame(cancelled: boolean) {
+  async function loadGameData() {
     setLoading(true);
     const supabase = supabaseRef.current;
-    const { data: sess, error: sessErr } = await supabase.from('game_sessions').select('*').eq('game_code', gameCode).single();
-    if (sessErr || !sess) { setError('ゲームセッションが見つかりません。コードを確認してください。'); setLoading(false); return; }
-    if (sess.status === 'finished') { router.push(`/results/${gameCode}`); return; }
-    if (cancelled) return;
-    sessionIdRef.current = sess.id;
-
-    if (channelRef.current) { supabase.removeChannel(channelRef.current); }
-    const sessionId = sess.id;
-    const channel = supabase
-      .channel(`play:${gameCode}:${Date.now()}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'teams', filter: `game_session_id=eq.${sessionId}` }, () => { fetchTeams(sessionId); })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'game_sessions', filter: `id=eq.${sessionId}` }, (payload) => {
-        const updated = payload.new as GameSession;
-        const prevSession = sessionRef.current;
-        setSession(updated); sessionRef.current = updated;
-        if (updated.status === 'finished') { setTimeout(() => router.push(`/results/${gameCode}`), 2000); return; }
-        if (prevSession && updated.current_turn_team_id !== prevSession.current_turn_team_id) { setTurnState(INITIAL_TURN_STATE); setIsGoalResult(false); isActingRef.current = false; }
-      })
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'turn_events', filter: `game_session_id=eq.${sessionId}` }, (payload) => {
-        if (isActingRef.current) return;
-        handleRemoteTurnEvent(payload.new as any);
-      })
-      .on('system', {}, (payload: any) => { if (payload?.extension === 'system' && payload?.message === 'disconnected') setConnectionLost(true); })
-      .subscribe(async (status) => {
-        if (status === 'SUBSCRIBED') {
-          setConnectionLost(false);
-          await loadAllGameData(sess);
-        }
-      });
-    channelRef.current = channel;
-  }
-
-  async function loadAllGameData(sess: GameSession) {
-    const supabase = supabaseRef.current;
-    setSession(sess); sessionRef.current = sess;
-    const { data: gs } = await supabase.from('game_sets').select('*').eq('id', sess.game_set_id).single();
-    setGameSet(gs ?? null);
-    const [cellsRes, quizzesRes, actionsRes] = await Promise.all([
-      supabase.from('cells').select('*').eq('game_set_id', sess.game_set_id).order('cell_number'),
-      supabase.from('quizzes').select('*').eq('game_set_id', sess.game_set_id),
-      supabase.from('actions').select('*').eq('game_set_id', sess.game_set_id),
-    ]);
-    setCells(cellsRes.data ?? []); setQuizzes(quizzesRes.data ?? []); setActions(actionsRes.data ?? []);
-    cellsRef.current = cellsRes.data ?? []; quizzesRef.current = quizzesRes.data ?? []; actionsRef.current = actionsRes.data ?? [];
-    const { data: latestSess } = await supabase.from('game_sessions').select('*').eq('id', sess.id).single();
-    if (latestSess) { setSession(latestSess); sessionRef.current = latestSess; }
-    await fetchTeams(sess.id);
+    try {
+      const { data: sess, error: sessErr } = await supabase.from('game_sessions').select('*').eq('game_code', gameCode).single();
+      if (sessErr || !sess) { setError('ゲームセッションが見つかりません。コードを確認してください。'); setLoading(false); return; }
+      if (sess.status === 'finished') { router.push(`/results/${gameCode}`); return; }
+      setSession(sess); sessionRef.current = sess;
+      sessionIdRef.current = sess.id;
+      lastKnownTurnRef.current = sess.turn_number;
+      const { data: gs } = await supabase.from('game_sets').select('*').eq('id', sess.game_set_id).single();
+      setGameSet(gs ?? null);
+      const [cellsRes, quizzesRes, actionsRes] = await Promise.all([
+        supabase.from('cells').select('*').eq('game_set_id', sess.game_set_id).order('cell_number'),
+        supabase.from('quizzes').select('*').eq('game_set_id', sess.game_set_id),
+        supabase.from('actions').select('*').eq('game_set_id', sess.game_set_id),
+      ]);
+      setCells(cellsRes.data ?? []); setQuizzes(quizzesRes.data ?? []); setActions(actionsRes.data ?? []);
+      cellsRef.current = cellsRes.data ?? []; quizzesRef.current = quizzesRes.data ?? []; actionsRef.current = actionsRes.data ?? [];
+      await fetchTeams(sess.id);
+    } catch { setError('データの読み込み中にエラーが発生しました。ページを再読み込みしてください。'); }
     setLoading(false);
-  }
-
-  function handleRemoteTurnEvent(event: { event_type: string; payload: any; team_id: string }) {
-    const { event_type, payload, team_id } = event;
-    const currentCells = cellsRef.current;
-    const currentQuizzes = quizzesRef.current;
-    switch (event_type) {
-      case 'dice_roll': {
-        setTurnState((prev) => ({ ...prev, phase: 'moving', diceValue: payload.dice_value, targetPosition: payload.target_position }));
-        setTimeout(() => {
-          fetchTeams(sessionIdRef.current);
-          const maxCell = Math.max(...currentCells.map((c) => c.cell_number));
-          if (payload.target_position >= maxCell) {
-            const team = teamsRef.current.find((t) => t.id === team_id);
-            setIsGoalResult(true);
-            setTurnState((prev) => ({ ...prev, phase: 'result', isCorrect: true, actionToApply: null, actionMessage: `${team?.team_name ?? 'チーム'} がゴールしました！🎉` }));
-            return;
-          }
-          const cell = getCellByNumber(currentCells, payload.target_position);
-          if (cell && cell.quiz_id) {
-            const quiz = currentQuizzes.find((q) => q.id === cell.quiz_id);
-            if (quiz) { setTurnState((prev) => ({ ...prev, phase: 'quiz', currentCell: cell, currentQuiz: quiz })); }
-            else { setTurnState((prev) => ({ ...prev, phase: 'next', currentCell: cell })); }
-          } else if (cell && (cell.cell_type === 'イベント' || cell.cell_type === 'ボーナス') && cell.correct_action_id) {
-            const action = actionsRef.current.find((a) => a.id === cell.correct_action_id);
-            if (action) { setTurnState((prev) => ({ ...prev, phase: 'result', currentCell: cell, isCorrect: true, actionToApply: action, actionMessage: action.message })); }
-            else { setTurnState((prev) => ({ ...prev, phase: 'next', currentCell: cell })); }
-          } else { setTurnState((prev) => ({ ...prev, phase: 'next', currentCell: cell ?? null })); }
-        }, 1200);
-        break;
-      }
-      case 'answer': {
-        const actionId = payload.is_correct ? turnState.currentCell?.correct_action_id : turnState.currentCell?.wrong_action_id;
-        const action = actionId ? actionsRef.current.find((a) => a.id === actionId) ?? null : null;
-        setTurnState((prev) => ({ ...prev, phase: 'result', selectedAnswer: payload.selected, isCorrect: payload.is_timeout ? null : payload.is_correct, actionToApply: action, actionMessage: action?.message ?? null }));
-        break;
-      }
-      case 'action': { fetchTeams(sessionIdRef.current); break; }
-    }
   }
 
   async function fetchTeams(sessionId: string) {
@@ -454,8 +370,10 @@ function PlayContent() {
     }
     const newTurnNumber = latestSession.turn_number + 1;
     await supabase.from('game_sessions').update({ current_turn_team_id: targetTeam.id, turn_number: newTurnNumber }).eq('id', latestSession.id);
-    setSession((prev) => prev ? { ...prev, current_turn_team_id: targetTeam.id, turn_number: newTurnNumber } : prev);
-    setTurnState(INITIAL_TURN_STATE);
+    // ★ 操作者自身もリロードして最新状態にする
+    lastKnownTurnRef.current = newTurnNumber;
+    isActingRef.current = false;
+    window.location.reload();
   }
 
   const currentTurnTeam = teams.find((t) => t.id === session?.current_turn_team_id);
@@ -473,7 +391,7 @@ function PlayContent() {
     return (<div className="flex min-h-screen items-center justify-center"><div className="text-center"><div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-4 border-indigo-500 border-t-transparent" /><p className="text-gray-500">ゲームを読み込み中...</p></div></div>);
   }
   if (error) {
-    return (<div className="flex min-h-screen flex-col items-center justify-center gap-4 p-6"><div className="text-4xl">😵</div><p className="text-red-600 font-medium">{error}</p><div className="flex gap-3"><button onClick={() => { setError(null); initGame(false); }} className="rounded-lg bg-indigo-600 px-6 py-2 font-medium text-white hover:bg-indigo-700">再読み込み</button><a href="/" className="rounded-lg border border-gray-300 px-6 py-2 font-medium text-gray-700 hover:bg-gray-50">トップへ</a></div></div>);
+    return (<div className="flex min-h-screen flex-col items-center justify-center gap-4 p-6"><div className="text-4xl">😵</div><p className="text-red-600 font-medium">{error}</p><div className="flex gap-3"><button onClick={() => { setError(null); loadGameData(); }} className="rounded-lg bg-indigo-600 px-6 py-2 font-medium text-white hover:bg-indigo-700">再読み込み</button><a href="/" className="rounded-lg border border-gray-300 px-6 py-2 font-medium text-gray-700 hover:bg-gray-50">トップへ</a></div></div>);
   }
 
   return (
