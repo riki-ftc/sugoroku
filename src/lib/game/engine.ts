@@ -80,54 +80,47 @@ export function applyAction(
 
 /**
  * 次のターンのチームを決定する
- * - 全チームゴール済み → null（ゲーム終了）
- * - もう一度フラグ → 同じチーム
- * - 休みターン → スキップ
+ * 戻り値: { team, isSameTeam }
+ *  - team: 次にプレイするチーム（null = ゲーム終了）
+ *  - isSameTeam: 同じチームが続くか（もう一度フラグ）
+ *
+ * 注意: この関数は休みチームも含めて「次にプレイすべきチーム」を返す。
+ * 休みチームの pause_turns 消費は呼び出し側で行う。
  */
 export function getNextTurnTeam(
   teams: Team[],
   currentTeamId: string,
-): Team | null {
+): { team: Team | null; isSameTeam: boolean } {
   const activeTeams = teams
     .filter((t) => !t.is_finished)
     .sort((a, b) => (a.turn_order ?? 0) - (b.turn_order ?? 0));
 
-  if (activeTeams.length === 0) return null; // ゲーム終了
+  if (activeTeams.length === 0) return { team: null, isSameTeam: false };
 
-  // 現在のチームが「もう一度」の場合
+  // 現在のチームが「もう一度」の場合 → 同じチーム
   const currentTeam = teams.find((t) => t.id === currentTeamId);
   if (currentTeam && currentTeam.roll_again && !currentTeam.is_finished) {
-    return currentTeam;
+    return { team: currentTeam, isSameTeam: true };
   }
 
-  // 次のアクティブチームを探す
-  const currentOrder = currentTeam?.turn_order ?? 0;
-  let nextTeam: Team | null = null;
+  // 現在のチームの turn_order を基準に次を探す
+  const currentOrder = currentTeam?.turn_order ?? -1;
 
-  // 現在のチームより後ろで、アクティブかつ休みでないチームを探す
+  // 現在より後ろのアクティブチームから探す
+  let nextTeam: Team | null = null;
   for (const t of activeTeams) {
-    if ((t.turn_order ?? 0) > currentOrder && t.pause_turns <= 0) {
+    if ((t.turn_order ?? 0) > currentOrder) {
       nextTeam = t;
       break;
     }
   }
 
-  // 見つからなければ先頭に戻って探す
+  // 見つからなければ先頭に戻る（ラウンドロビン）
   if (!nextTeam) {
-    for (const t of activeTeams) {
-      if (t.pause_turns <= 0) {
-        nextTeam = t;
-        break;
-      }
-    }
-  }
-
-  // 全員休みの場合（レアケース）→ 休みターンを消費して再試行
-  if (!nextTeam && activeTeams.length > 0) {
     nextTeam = activeTeams[0];
   }
 
-  return nextTeam;
+  return { team: nextTeam, isSameTeam: false };
 }
 
 /**
