@@ -95,7 +95,27 @@ function QuizModal({ quiz, timeLimit, onAnswer, readOnly }: { quiz: Quiz; timeLi
   );
 }
 
-function ResultModal({ isCorrect, explanation, action, actionMessage, onContinue, canContinue }: { isCorrect: boolean | null; explanation: string | null; action: Action | null; actionMessage: string | null; onContinue: () => void; canContinue: boolean }) {
+function ResultModal({ isCorrect, explanation, action, actionMessage, onContinue, canContinue, autoClose }: { isCorrect: boolean | null; explanation: string | null; action: Action | null; actionMessage: string | null; onContinue: () => void; canContinue: boolean; autoClose?: boolean }) {
+  const [countdown, setCountdown] = useState(5);
+  const calledRef = useRef(false);
+
+  useEffect(() => {
+    if (!autoClose) return;
+    calledRef.current = false;
+    setCountdown(5);
+    const timer = setInterval(() => {
+      setCountdown((prev) => {
+        if (prev <= 1) {
+          clearInterval(timer);
+          if (!calledRef.current) { calledRef.current = true; onContinue(); }
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [autoClose, onContinue]);
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <div className="w-full max-w-md rounded-2xl bg-white p-6 text-center shadow-2xl dark:bg-gray-900">
@@ -103,7 +123,13 @@ function ResultModal({ isCorrect, explanation, action, actionMessage, onContinue
         <h3 className={`mb-2 text-2xl font-bold ${isCorrect === null ? 'text-gray-700' : isCorrect ? 'text-green-600' : 'text-red-600'}`}>{isCorrect === null ? '時間切れ！' : isCorrect ? '正解！' : '不正解...'}</h3>
         {explanation && <p className="mb-4 text-sm text-gray-600 dark:text-gray-400">{explanation}</p>}
         {(action || actionMessage) && (<div className="mb-4 rounded-lg bg-indigo-50 p-3 dark:bg-indigo-950"><p className="font-medium text-indigo-700 dark:text-indigo-300">{actionMessage ?? action?.message ?? `${action?.action_type}${action?.value ? ` ${action.value}マス` : ''}`}</p></div>)}
-        {canContinue ? (<button onClick={onContinue} className="mt-2 rounded-lg bg-indigo-600 px-8 py-3 font-bold text-white shadow-lg hover:bg-indigo-700">次へ</button>) : (<p className="mt-2 text-sm text-gray-400 animate-pulse">プレイヤーの操作を待っています...</p>)}
+        {autoClose ? (
+          <p className="mt-2 text-sm text-gray-400">{countdown}秒後に自動で進みます...</p>
+        ) : canContinue ? (
+          <button onClick={onContinue} className="mt-2 rounded-lg bg-indigo-600 px-8 py-3 font-bold text-white shadow-lg hover:bg-indigo-700">次へ</button>
+        ) : (
+          <p className="mt-2 text-sm text-gray-400 animate-pulse">プレイヤーの操作を待っています...</p>
+        )}
       </div>
     </div>
   );
@@ -133,6 +159,7 @@ function PlayContent() {
   const [error, setError] = useState<string | null>(null);
   const [myTeamId, setMyTeamId] = useState<string | null>(null);
   const [connectionLost, setConnectionLost] = useState(false);
+  const [isGoalResult, setIsGoalResult] = useState(false);
 
   const supabaseRef = useRef(createClient());
   const sessionRef = useRef<GameSession | null>(null);
@@ -141,6 +168,7 @@ function PlayContent() {
   const quizzesRef = useRef<Quiz[]>([]);
   const actionsRef = useRef<Action[]>([]);
   const isActingRef = useRef(false);
+  const channelRef = useRef<ReturnType<ReturnType<typeof createClient>['channel']> | null>(null);
 
   useEffect(() => { sessionRef.current = session; }, [session]);
   useEffect(() => { teamsRef.current = teams; }, [teams]);
@@ -155,30 +183,63 @@ function PlayContent() {
     }
   }, [gameCode, isHost]);
 
-  useEffect(() => { loadGameData(); }, [gameCode]);
-
+  // ★ loadGameData + Realtime購読を一体化
   useEffect(() => {
-    if (!session) return;
+    let cancelled = false;
+    loadGameDataAndSubscribe(cancelled);
+    return () => {
+      cancelled = true;
+      if (channelRef.current) {
+        supabaseRef.current.removeChannel(channelRef.current);
+        channelRef.current = null;
+      }
+    };
+  }, [gameCode]);
+
+  async function loadGameDataAndSubscribe(cancelled: boolean) {
+    setLoading(true);
     const supabase = supabaseRef.current;
-    const sessionId = session.id;
-    const channel = supabase
-      .channel(`play:${gameCode}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'teams', filter: `game_session_id=eq.${sessionId}` }, () => { fetchTeams(sessionId); })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'game_sessions', filter: `id=eq.${sessionId}` }, (payload) => {
-        const updated = payload.new as GameSession;
-        const prevSession = sessionRef.current;
-        setSession(updated); sessionRef.current = updated;
-        if (updated.status === 'finished') { setTimeout(() => router.push(`/results/${gameCode}`), 2000); return; }
-        if (prevSession && updated.current_turn_team_id !== prevSession.current_turn_team_id) { setTurnState(INITIAL_TURN_STATE); isActingRef.current = false; }
-      })
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'turn_events', filter: `game_session_id=eq.${sessionId}` }, (payload) => {
-        if (isActingRef.current) return;
-        handleRemoteTurnEvent(payload.new as any);
-      })
-      .on('system', {}, (payload: any) => { if (payload?.extension === 'system' && payload?.message === 'disconnected') setConnectionLost(true); })
-      .subscribe((status) => { if (status === 'SUBSCRIBED') setConnectionLost(false); });
-    return () => { supabase.removeChannel(channel); };
-  }, [session?.id, gameCode]);
+    try {
+      const { data: sess, error: sessErr } = await supabase.from('game_sessions').select('*').eq('game_code', gameCode).single();
+      if (sessErr || !sess) { setError('ゲームセッションが見つかりません。コードを確認してください。'); setLoading(false); return; }
+      if (sess.status === 'finished') { router.push(`/results/${gameCode}`); return; }
+      if (cancelled) return;
+      setSession(sess); sessionRef.current = sess;
+      const { data: gs } = await supabase.from('game_sets').select('*').eq('id', sess.game_set_id).single();
+      setGameSet(gs ?? null);
+      const [cellsRes, quizzesRes, actionsRes] = await Promise.all([
+        supabase.from('cells').select('*').eq('game_set_id', sess.game_set_id).order('cell_number'),
+        supabase.from('quizzes').select('*').eq('game_set_id', sess.game_set_id),
+        supabase.from('actions').select('*').eq('game_set_id', sess.game_set_id),
+      ]);
+      if (cancelled) return;
+      setCells(cellsRes.data ?? []); setQuizzes(quizzesRes.data ?? []); setActions(actionsRes.data ?? []);
+      cellsRef.current = cellsRes.data ?? []; quizzesRef.current = quizzesRes.data ?? []; actionsRef.current = actionsRes.data ?? [];
+      await fetchTeams(sess.id);
+
+      // ★ Realtime購読をここで開始（sessionIdが確定した後）
+      if (channelRef.current) { supabase.removeChannel(channelRef.current); }
+      const sessionId = sess.id;
+      const channel = supabase
+        .channel(`play:${gameCode}:${sessionId}`)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'teams', filter: `game_session_id=eq.${sessionId}` }, () => { fetchTeams(sessionId); })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'game_sessions', filter: `id=eq.${sessionId}` }, (payload) => {
+          const updated = payload.new as GameSession;
+          const prevSession = sessionRef.current;
+          setSession(updated); sessionRef.current = updated;
+          if (updated.status === 'finished') { setTimeout(() => router.push(`/results/${gameCode}`), 2000); return; }
+          if (prevSession && updated.current_turn_team_id !== prevSession.current_turn_team_id) { setTurnState(INITIAL_TURN_STATE); setIsGoalResult(false); isActingRef.current = false; }
+        })
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'turn_events', filter: `game_session_id=eq.${sessionId}` }, (payload) => {
+          if (isActingRef.current) return;
+          handleRemoteTurnEvent(payload.new as any);
+        })
+        .on('system', {}, (payload: any) => { if (payload?.extension === 'system' && payload?.message === 'disconnected') setConnectionLost(true); })
+        .subscribe((status) => { if (status === 'SUBSCRIBED') setConnectionLost(false); });
+      channelRef.current = channel;
+    } catch { setError('データの読み込み中にエラーが発生しました。ページを再読み込みしてください。'); }
+    setLoading(false);
+  }
 
   function handleRemoteTurnEvent(event: { event_type: string; payload: any; team_id: string }) {
     const { event_type, payload, team_id } = event;
@@ -192,6 +253,7 @@ function PlayContent() {
           const maxCell = Math.max(...currentCells.map((c) => c.cell_number));
           if (payload.target_position >= maxCell) {
             const team = teamsRef.current.find((t) => t.id === team_id);
+            setIsGoalResult(true);
             setTurnState((prev) => ({ ...prev, phase: 'result', isCorrect: true, actionToApply: null, actionMessage: `${team?.team_name ?? 'チーム'} がゴールしました！🎉` }));
             return;
           }
@@ -218,36 +280,13 @@ function PlayContent() {
     }
   }
 
-  async function loadGameData() {
-    setLoading(true);
-    const supabase = supabaseRef.current;
-    try {
-      const { data: sess, error: sessErr } = await supabase.from('game_sessions').select('*').eq('game_code', gameCode).single();
-      if (sessErr || !sess) { setError('ゲームセッションが見つかりません。コードを確認してください。'); setLoading(false); return; }
-      if (sess.status === 'finished') { router.push(`/results/${gameCode}`); return; }
-      setSession(sess); sessionRef.current = sess;
-      const { data: gs } = await supabase.from('game_sets').select('*').eq('id', sess.game_set_id).single();
-      setGameSet(gs ?? null);
-      const [cellsRes, quizzesRes, actionsRes] = await Promise.all([
-        supabase.from('cells').select('*').eq('game_set_id', sess.game_set_id).order('cell_number'),
-        supabase.from('quizzes').select('*').eq('game_set_id', sess.game_set_id),
-        supabase.from('actions').select('*').eq('game_set_id', sess.game_set_id),
-      ]);
-      setCells(cellsRes.data ?? []); setQuizzes(quizzesRes.data ?? []); setActions(actionsRes.data ?? []);
-      cellsRef.current = cellsRes.data ?? []; quizzesRef.current = quizzesRes.data ?? []; actionsRef.current = actionsRes.data ?? [];
-      await fetchTeams(sess.id);
-    } catch { setError('データの読み込み中にエラーが発生しました。ページを再読み込みしてください。'); }
-    setLoading(false);
-  }
-
   async function fetchTeams(sessionId: string) {
     const { data } = await supabaseRef.current.from('teams').select('*').eq('game_session_id', sessionId).order('turn_order');
     const t = data ?? []; setTeams(t); teamsRef.current = t;
   }
 
-  // ★ handleRoll はプレイヤーのみ使用（ホストは呼ばない）
   async function handleRoll() {
-    if (isHost) return; // ホストガード
+    if (isHost) return;
     const currentSession = sessionRef.current;
     const currentCells = cellsRef.current;
     const currentQuizzes = quizzesRef.current;
@@ -284,7 +323,7 @@ function PlayContent() {
   }
 
   async function handleAnswer(choice: string) {
-    if (isHost) return; // ホストガード
+    if (isHost) return;
     const currentSession = sessionRef.current;
     const currentTeam = teamsRef.current.find((t) => t.id === currentSession?.current_turn_team_id);
     if (!currentSession || !currentTeam || !turnState.currentQuiz || !turnState.currentCell) return;
@@ -298,17 +337,35 @@ function PlayContent() {
   }
 
   async function handleResultContinue() {
-    if (isHost) return; // ホストガード
+    if (isHost) return;
     const currentSession = sessionRef.current;
     const currentTeam = teamsRef.current.find((t) => t.id === currentSession?.current_turn_team_id);
     if (!currentSession || !currentTeam) return;
+
+    // ★ ゴール結果の場合はアクション不要、直接 advanceTurn
+    if (isGoalResult) {
+      setIsGoalResult(false);
+      isActingRef.current = false;
+      await fetchTeams(currentSession.id);
+      setTimeout(() => advanceTurn(), 500);
+      return;
+    }
+
     const action = turnState.actionToApply;
     if (action) {
       const maxCell = Math.max(...cellsRef.current.map((c) => c.cell_number));
       const updates = applyAction(currentTeam, action, maxCell);
       await supabaseRef.current.from('teams').update(updates).eq('id', currentTeam.id);
       await supabaseRef.current.from('turn_events').insert({ game_session_id: currentSession.id, team_id: currentTeam.id, turn_number: currentSession.turn_number, event_type: 'action', payload: { action_code: action.action_code, action_type: action.action_type, value: action.value, updates } });
-      if (updates.is_finished) { await supabaseRef.current.from('teams').update({ is_finished: true, finished_turn: currentSession.turn_number }).eq('id', currentTeam.id); }
+      // ★ アクションでゴール到達した場合
+      if (updates.is_finished) {
+        await supabaseRef.current.from('teams').update({ is_finished: true, finished_turn: currentSession.turn_number }).eq('id', currentTeam.id);
+        await fetchTeams(currentSession.id);
+        setIsGoalResult(true);
+        setTurnState((prev) => ({ ...prev, phase: 'result', isCorrect: true, actionToApply: null, currentQuiz: null, actionMessage: `${currentTeam.team_name} がゴールしました！🎉` }));
+        isActingRef.current = false;
+        return;
+      }
     }
     await fetchTeams(currentSession.id);
     isActingRef.current = false;
@@ -321,49 +378,42 @@ function PlayContent() {
     const maxCell = Math.max(...cellsRef.current.map((c) => c.cell_number));
     await supabaseRef.current.from('teams').update({ is_finished: true, finished_turn: sess.turn_number, current_position: maxCell }).eq('id', team.id);
     await fetchTeams(sess.id);
+    setIsGoalResult(true);
     setTurnState((prev) => ({ ...prev, phase: 'result', isCorrect: true, actionToApply: null, actionMessage: `${team.team_name} がゴールしました！🎉` }));
   }
 
   async function advanceTurn() {
-    if (isHost) return; // ホストはターン遷移しない（プレイヤーが行う）
+    if (isHost) return;
     const supabase = supabaseRef.current;
     const { data: latestSession } = await supabase.from('game_sessions').select('*').eq('game_code', gameCode).single();
     if (!latestSession) return;
     const { data: latestTeamsData } = await supabase.from('teams').select('*').eq('game_session_id', latestSession.id).order('turn_order');
     let latestTeams = latestTeamsData ?? [];
-
     if (isGameFinished(latestTeams)) {
       await supabase.from('game_sessions').update({ status: 'finished', finished_at: new Date().toISOString() }).eq('id', latestSession.id);
       setTimeout(() => router.push(`/results/${gameCode}`), 2000);
       return;
     }
-
     const currentTeamId = latestSession.current_turn_team_id ?? '';
     const { team: nextTeam, isSameTeam } = getNextTurnTeam(latestTeams, currentTeamId);
-
     if (!nextTeam) {
       await supabase.from('game_sessions').update({ status: 'finished', finished_at: new Date().toISOString() }).eq('id', latestSession.id);
       setTimeout(() => router.push(`/results/${gameCode}`), 2000);
       return;
     }
-
     if (isSameTeam) {
       await supabase.from('teams').update({ roll_again: false }).eq('id', nextTeam.id);
       setTurnState(INITIAL_TURN_STATE);
       return;
     }
-
     const currentTeam = latestTeams.find((t) => t.id === currentTeamId);
     if (currentTeam?.roll_again) {
       await supabase.from('teams').update({ roll_again: false }).eq('id', currentTeamId);
     }
-
     let targetTeam = nextTeam;
     const activeTeams = latestTeams.filter((t) => !t.is_finished).sort((a, b) => (a.turn_order ?? 0) - (b.turn_order ?? 0));
     let attempts = 0;
-    const maxAttempts = activeTeams.length;
-
-    while (targetTeam.pause_turns > 0 && attempts < maxAttempts) {
+    while (targetTeam.pause_turns > 0 && attempts < activeTeams.length) {
       await supabase.from('teams').update({ pause_turns: targetTeam.pause_turns - 1 }).eq('id', targetTeam.id);
       latestTeams = latestTeams.map((t) => t.id === targetTeam.id ? { ...t, pause_turns: t.pause_turns - 1 } : t);
       const { team: afterNext } = getNextTurnTeam(latestTeams, targetTeam.id);
@@ -371,7 +421,6 @@ function PlayContent() {
       targetTeam = afterNext;
       attempts++;
     }
-
     const newTurnNumber = latestSession.turn_number + 1;
     await supabase.from('game_sessions').update({ current_turn_team_id: targetTeam.id, turn_number: newTurnNumber }).eq('id', latestSession.id);
     setSession((prev) => prev ? { ...prev, current_turn_team_id: targetTeam.id, turn_number: newTurnNumber } : prev);
@@ -380,7 +429,6 @@ function PlayContent() {
 
   const currentTurnTeam = teams.find((t) => t.id === session?.current_turn_team_id);
   const isMyTurn = !isHost && myTeamId === session?.current_turn_team_id;
-  // ★ ホストは操作不可（観戦のみ）
   const canRoll = isMyTurn && turnState.phase === 'roll' && !rolling;
   const canAnswer = isMyTurn && turnState.phase === 'quiz';
   const canContinue = isMyTurn;
@@ -392,7 +440,7 @@ function PlayContent() {
     return (<div className="flex min-h-screen items-center justify-center"><div className="text-center"><div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-4 border-indigo-500 border-t-transparent" /><p className="text-gray-500">ゲームを読み込み中...</p></div></div>);
   }
   if (error) {
-    return (<div className="flex min-h-screen flex-col items-center justify-center gap-4 p-6"><div className="text-4xl">😵</div><p className="text-red-600 font-medium">{error}</p><div className="flex gap-3"><button onClick={() => { setError(null); loadGameData(); }} className="rounded-lg bg-indigo-600 px-6 py-2 font-medium text-white hover:bg-indigo-700">再読み込み</button><a href="/" className="rounded-lg border border-gray-300 px-6 py-2 font-medium text-gray-700 hover:bg-gray-50">トップへ</a></div></div>);
+    return (<div className="flex min-h-screen flex-col items-center justify-center gap-4 p-6"><div className="text-4xl">😵</div><p className="text-red-600 font-medium">{error}</p><div className="flex gap-3"><button onClick={() => { setError(null); loadGameDataAndSubscribe(false); }} className="rounded-lg bg-indigo-600 px-6 py-2 font-medium text-white hover:bg-indigo-700">再読み込み</button><a href="/" className="rounded-lg border border-gray-300 px-6 py-2 font-medium text-gray-700 hover:bg-gray-50">トップへ</a></div></div>);
   }
 
   return (
@@ -445,13 +493,11 @@ function PlayContent() {
           </div>
         </div>
       </main>
-      {/* ★ クイズモーダル: ホストは readOnly で表示（回答不可） */}
       {turnState.phase === 'quiz' && turnState.currentQuiz && (
         <QuizModal quiz={turnState.currentQuiz} timeLimit={gameSet?.answer_time_limit ?? 30} onAnswer={handleAnswer} readOnly={isHost || !canAnswer} />
       )}
-      {/* ★ 結果モーダル: ホストは「次へ」ボタンなし */}
       {turnState.phase === 'result' && (
-        <ResultModal isCorrect={turnState.isCorrect} explanation={turnState.currentQuiz?.explanation ?? null} action={turnState.actionToApply} actionMessage={turnState.actionMessage} onContinue={handleResultContinue} canContinue={canContinue} />
+        <ResultModal isCorrect={turnState.isCorrect} explanation={turnState.currentQuiz?.explanation ?? null} action={turnState.actionToApply} actionMessage={turnState.actionMessage} onContinue={handleResultContinue} canContinue={canContinue} autoClose={isGoalResult} />
       )}
     </div>
   );
