@@ -1,3 +1,7 @@
+// play/[code]/page.tsx – ポーリングフォールバック追加版
+// 長いファイルのため、PlayContent内のuseEffect群とfetchTeamsのみ変更。
+// UIコンポーネント（DiceDisplay, GameBoard, QuizModal, ResultModal, ConnectionBanner）は前回と同一。
+
 'use client';
 
 import { useEffect, useState, useRef, Suspense } from 'react';
@@ -95,27 +99,20 @@ function QuizModal({ quiz, timeLimit, onAnswer, readOnly }: { quiz: Quiz; timeLi
   );
 }
 
-// ★ ResultModal: autoCloseSeconds で自動消去、canContinue でボタン表示
 function ResultModal({ isCorrect, explanation, action, actionMessage, onContinue, canContinue, autoCloseSeconds }: {
   isCorrect: boolean | null; explanation: string | null; action: Action | null; actionMessage: string | null;
   onContinue: () => void; canContinue: boolean; autoCloseSeconds?: number;
 }) {
   const [countdown, setCountdown] = useState(autoCloseSeconds ?? 0);
   const calledRef = useRef(false);
-
   useEffect(() => {
     if (!autoCloseSeconds || autoCloseSeconds <= 0) return;
-    calledRef.current = false;
-    setCountdown(autoCloseSeconds);
+    calledRef.current = false; setCountdown(autoCloseSeconds);
     const timer = setInterval(() => {
-      setCountdown((prev) => {
-        if (prev <= 1) { clearInterval(timer); if (!calledRef.current) { calledRef.current = true; onContinue(); } return 0; }
-        return prev - 1;
-      });
+      setCountdown((prev) => { if (prev <= 1) { clearInterval(timer); if (!calledRef.current) { calledRef.current = true; onContinue(); } return 0; } return prev - 1; });
     }, 1000);
     return () => clearInterval(timer);
   }, [autoCloseSeconds, onContinue]);
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <div className="w-full max-w-md rounded-2xl bg-white p-6 text-center shadow-2xl dark:bg-gray-900">
@@ -163,7 +160,6 @@ function PlayContent() {
   const [myTeamId, setMyTeamId] = useState<string | null>(null);
   const [connectionLost, setConnectionLost] = useState(false);
   const [isGoalResult, setIsGoalResult] = useState(false);
-  const [realtimeReady, setRealtimeReady] = useState(false);
 
   const supabaseRef = useRef(createClient());
   const sessionRef = useRef<GameSession | null>(null);
@@ -188,7 +184,7 @@ function PlayContent() {
     }
   }, [gameCode, isHost]);
 
-  // ★ ステップ1: まずsession取得→Realtime購読開始→SUBSCRIBED待ち→データ取得
+  // ★ 初期化: session取得 → Realtime購読 → SUBSCRIBED後にデータ取得
   useEffect(() => {
     let cancelled = false;
     initGame(cancelled);
@@ -198,22 +194,50 @@ function PlayContent() {
     };
   }, [gameCode]);
 
+  // ★★★ ポーリングフォールバック: 3秒ごとにsessionとteamsをチェック ★★★
+  useEffect(() => {
+    if (!sessionIdRef.current || loading) return;
+    const pollInterval = setInterval(async () => {
+      if (isActingRef.current) return; // 操作中はスキップ
+      const supabase = supabaseRef.current;
+      const { data: polledSession } = await supabase
+        .from('game_sessions').select('id, current_turn_team_id, turn_number, status')
+        .eq('id', sessionIdRef.current).single();
+      if (!polledSession) return;
+      const prev = sessionRef.current;
+      if (polledSession.status === 'finished' && prev?.status !== 'finished') {
+        setSession((p) => p ? { ...p, status: 'finished' } : p);
+        sessionRef.current = { ...prev!, status: 'finished' } as GameSession;
+        setTimeout(() => router.push(`/results/${gameCode}`), 2000);
+        return;
+      }
+      // current_turn_team_id か turn_number が変わっていたら更新
+      if (prev && (polledSession.current_turn_team_id !== prev.current_turn_team_id || polledSession.turn_number !== prev.turn_number)) {
+        setSession((p) => p ? { ...p, current_turn_team_id: polledSession.current_turn_team_id, turn_number: polledSession.turn_number } : p);
+        sessionRef.current = { ...prev, current_turn_team_id: polledSession.current_turn_team_id, turn_number: polledSession.turn_number } as GameSession;
+        setTurnState(INITIAL_TURN_STATE);
+        setIsGoalResult(false);
+        isActingRef.current = false;
+        // teamsも更新
+        await fetchTeams(sessionIdRef.current);
+      }
+    }, 3000);
+    return () => clearInterval(pollInterval);
+  }, [loading, gameCode]);
+
   async function initGame(cancelled: boolean) {
     setLoading(true);
     const supabase = supabaseRef.current;
-
-    // 1. まずsessionだけ取得
     const { data: sess, error: sessErr } = await supabase.from('game_sessions').select('*').eq('game_code', gameCode).single();
     if (sessErr || !sess) { setError('ゲームセッションが見つかりません。コードを確認してください。'); setLoading(false); return; }
     if (sess.status === 'finished') { router.push(`/results/${gameCode}`); return; }
     if (cancelled) return;
     sessionIdRef.current = sess.id;
 
-    // 2. Realtime購読を開始して、SUBSCRIBEDを待つ
     if (channelRef.current) { supabase.removeChannel(channelRef.current); }
     const sessionId = sess.id;
     const channel = supabase
-      .channel(`play:${gameCode}:${Date.now()}`) // ユニークなチャネル名
+      .channel(`play:${gameCode}:${Date.now()}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'teams', filter: `game_session_id=eq.${sessionId}` }, () => { fetchTeams(sessionId); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'game_sessions', filter: `id=eq.${sessionId}` }, (payload) => {
         const updated = payload.new as GameSession;
@@ -230,8 +254,6 @@ function PlayContent() {
       .subscribe(async (status) => {
         if (status === 'SUBSCRIBED') {
           setConnectionLost(false);
-          setRealtimeReady(true);
-          // 3. SUBSCRIBEDになってから全データを取得（この時点からRealtimeイベントを逃さない）
           await loadAllGameData(sess);
         }
       });
@@ -250,7 +272,6 @@ function PlayContent() {
     ]);
     setCells(cellsRes.data ?? []); setQuizzes(quizzesRes.data ?? []); setActions(actionsRes.data ?? []);
     cellsRef.current = cellsRes.data ?? []; quizzesRef.current = quizzesRes.data ?? []; actionsRef.current = actionsRes.data ?? [];
-    // 最新のsessionも再取得（subscribe中に変わった可能性）
     const { data: latestSess } = await supabase.from('game_sessions').select('*').eq('id', sess.id).single();
     if (latestSess) { setSession(latestSess); sessionRef.current = latestSess; }
     await fetchTeams(sess.id);
@@ -351,11 +372,7 @@ function PlayContent() {
     setTurnState((prev) => ({ ...prev, phase: 'result', selectedAnswer: choice, isCorrect: isTimeout ? null : isCorrect, actionToApply: action, actionMessage: action?.message ?? null }));
   }
 
-  // ★ リモートの結果モーダル自動消去用
-  function dismissRemoteResult() {
-    setTurnState(INITIAL_TURN_STATE);
-    setIsGoalResult(false);
-  }
+  function dismissRemoteResult() { setTurnState(INITIAL_TURN_STATE); setIsGoalResult(false); }
 
   async function handleResultContinue() {
     if (isHost) return;
@@ -363,8 +380,7 @@ function PlayContent() {
     const currentTeam = teamsRef.current.find((t) => t.id === currentSession?.current_turn_team_id);
     if (!currentSession || !currentTeam) return;
     if (isGoalResult) {
-      setIsGoalResult(false);
-      isActingRef.current = false;
+      setIsGoalResult(false); isActingRef.current = false;
       await fetchTeams(currentSession.id);
       setTimeout(() => advanceTurn(), 500);
       return;
@@ -447,11 +463,6 @@ function PlayContent() {
   const canRoll = isMyTurn && turnState.phase === 'roll' && !rolling;
   const canAnswer = isMyTurn && turnState.phase === 'quiz';
   const canContinue = isMyTurn;
-
-  // ★ 結果モーダルの自動消去ロジック
-  // - ゴール結果: 全員5秒で自動消去 + 操作者は手動でも消せる
-  // - 通常結果 + 自分のターン: 手動のみ
-  // - 通常結果 + 他人のターン/ホスト: 3秒で自動消去
   const resultAutoClose = isGoalResult ? 5 : (!canContinue ? 3 : undefined);
   const resultOnContinue = canContinue ? handleResultContinue : dismissRemoteResult;
 
