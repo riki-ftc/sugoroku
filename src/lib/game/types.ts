@@ -93,6 +93,17 @@ export type Player = {
   joined_at: string;
 };
 
+export type PlayerAnswer = {
+  id: string;
+  game_session_id: string;
+  team_id: string;
+  player_id: string;
+  quiz_id: string;
+  turn_number: number;
+  selected_answer: 'A' | 'B' | 'C' | 'D' | null; // null = タイムアウト
+  answered_at: string;
+};
+
 export type GameSet = {
   id: string;
   name: string;
@@ -131,6 +142,9 @@ export type TurnState = {
   isCorrect: boolean | null;
   actionToApply: Action | null;
   actionMessage: string | null;
+  // チーム回答用
+  teamAnswers: PlayerAnswer[];  // 全員一致モードで集まった回答
+  myAnswerSubmitted: boolean;   // 自分が回答済みか
 };
 
 export const INITIAL_TURN_STATE: TurnState = {
@@ -143,4 +157,6 @@ export const INITIAL_TURN_STATE: TurnState = {
   isCorrect: null,
   actionToApply: null,
   actionMessage: null,
+  teamAnswers: [],
+  myAnswerSubmitted: false,
 };
