@@ -11,7 +11,6 @@ import {
   generateBoardLayout, getCellColor, getCellEmoji,
 } from '@/lib/game';
 
-// === サイコロコンポーネント ===
 function DiceDisplay({ value, rolling }: { value: number | null; rolling: boolean }) {
   const dotPositions: Record<number, number[][]> = {
     1: [[1, 1]], 2: [[0, 2], [2, 0]], 3: [[0, 2], [1, 1], [2, 0]],
@@ -33,7 +32,6 @@ function DiceDisplay({ value, rolling }: { value: number | null; rolling: boolea
   );
 }
 
-// === 盤面コンポーネント ===
 function GameBoard({ cells, teams, columns = 5 }: { cells: Cell[]; teams: Team[]; columns?: number }) {
   const sorted = [...cells].sort((a, b) => a.cell_number - b.cell_number);
   const positions = generateBoardLayout(sorted.length, columns);
@@ -63,8 +61,7 @@ function GameBoard({ cells, teams, columns = 5 }: { cells: Cell[]; teams: Team[]
   );
 }
 
-// === クイズモーダル ===
-function QuizModal({ quiz, timeLimit, onAnswer }: { quiz: Quiz; timeLimit: number; onAnswer: (choice: string) => void }) {
+function QuizModal({ quiz, timeLimit, onAnswer, readOnly }: { quiz: Quiz; timeLimit: number; onAnswer: (choice: string) => void; readOnly: boolean }) {
   const [remaining, setRemaining] = useState(timeLimit);
   const [selected, setSelected] = useState<string | null>(null);
   const answeredRef = useRef(false);
@@ -72,12 +69,12 @@ function QuizModal({ quiz, timeLimit, onAnswer }: { quiz: Quiz; timeLimit: numbe
   useEffect(() => {
     if (timeLimit <= 0) return;
     const timer = setInterval(() => {
-      setRemaining((prev) => { if (prev <= 1) { clearInterval(timer); if (!answeredRef.current) { answeredRef.current = true; onAnswer('TIMEOUT'); } return 0; } return prev - 1; });
+      setRemaining((prev) => { if (prev <= 1) { clearInterval(timer); if (!answeredRef.current && !readOnly) { answeredRef.current = true; onAnswer('TIMEOUT'); } return 0; } return prev - 1; });
     }, 1000);
     return () => clearInterval(timer);
-  }, [quiz.id, timeLimit, onAnswer]);
+  }, [quiz.id, timeLimit, onAnswer, readOnly]);
   const choices = [{ key: 'A', text: quiz.choice_a }, { key: 'B', text: quiz.choice_b }, ...(quiz.choice_c ? [{ key: 'C', text: quiz.choice_c }] : []), ...(quiz.choice_d ? [{ key: 'D', text: quiz.choice_d }] : [])];
-  function handleSelect(key: string) { if (selected || answeredRef.current) return; answeredRef.current = true; setSelected(key); setTimeout(() => onAnswer(key), 400); }
+  function handleSelect(key: string) { if (selected || answeredRef.current || readOnly) return; answeredRef.current = true; setSelected(key); setTimeout(() => onAnswer(key), 400); }
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl dark:bg-gray-900">
@@ -87,15 +84,17 @@ function QuizModal({ quiz, timeLimit, onAnswer }: { quiz: Quiz; timeLimit: numbe
           {quiz.difficulty && <span className={`rounded-full px-2 py-0.5 ${quiz.difficulty === '易' ? 'bg-green-100 text-green-700' : quiz.difficulty === '中' ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700'}`}>{quiz.difficulty}</span>}
         </div>
         <h3 className="mb-6 text-lg font-bold leading-relaxed">{quiz.question}</h3>
+        {readOnly && <p className="mb-4 text-sm text-gray-400 text-center animate-pulse">プレイヤーの回答を待っています...</p>}
         <div className="space-y-3">
-          {choices.map(({ key, text }) => (<button key={key} onClick={() => handleSelect(key)} disabled={!!selected} className={`w-full rounded-xl border-2 px-4 py-3 text-left font-medium transition-all ${selected === key ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-gray-200 bg-gray-50 hover:border-indigo-300 hover:bg-indigo-50/50 dark:border-gray-700 dark:bg-gray-800'} ${selected && selected !== key ? 'opacity-50' : ''}`}><span className="mr-2 inline-flex h-7 w-7 items-center justify-center rounded-full bg-gray-200 text-sm font-bold text-gray-700 dark:bg-gray-700 dark:text-gray-300">{key}</span>{text}</button>))}
+          {choices.map(({ key, text }) => (<button key={key} onClick={() => handleSelect(key)} disabled={!!selected || readOnly}
+            className={`w-full rounded-xl border-2 px-4 py-3 text-left font-medium transition-all ${selected === key ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-gray-200 bg-gray-50 hover:border-indigo-300 hover:bg-indigo-50/50 dark:border-gray-700 dark:bg-gray-800'} ${selected && selected !== key ? 'opacity-50' : ''} ${readOnly ? 'cursor-default' : ''}`}>
+            <span className="mr-2 inline-flex h-7 w-7 items-center justify-center rounded-full bg-gray-200 text-sm font-bold text-gray-700 dark:bg-gray-700 dark:text-gray-300">{key}</span>{text}</button>))}
         </div>
       </div>
     </div>
   );
 }
 
-// === 結果表示モーダル ===
 function ResultModal({ isCorrect, explanation, action, actionMessage, onContinue, canContinue }: { isCorrect: boolean | null; explanation: string | null; action: Action | null; actionMessage: string | null; onContinue: () => void; canContinue: boolean }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
@@ -104,7 +103,7 @@ function ResultModal({ isCorrect, explanation, action, actionMessage, onContinue
         <h3 className={`mb-2 text-2xl font-bold ${isCorrect === null ? 'text-gray-700' : isCorrect ? 'text-green-600' : 'text-red-600'}`}>{isCorrect === null ? '時間切れ！' : isCorrect ? '正解！' : '不正解...'}</h3>
         {explanation && <p className="mb-4 text-sm text-gray-600 dark:text-gray-400">{explanation}</p>}
         {(action || actionMessage) && (<div className="mb-4 rounded-lg bg-indigo-50 p-3 dark:bg-indigo-950"><p className="font-medium text-indigo-700 dark:text-indigo-300">{actionMessage ?? action?.message ?? `${action?.action_type}${action?.value ? ` ${action.value}マス` : ''}`}</p></div>)}
-        {canContinue ? (<button onClick={onContinue} className="mt-2 rounded-lg bg-indigo-600 px-8 py-3 font-bold text-white shadow-lg hover:bg-indigo-700">次へ</button>) : (<p className="mt-2 text-sm text-gray-400 animate-pulse">操作者の操作を待っています...</p>)}
+        {canContinue ? (<button onClick={onContinue} className="mt-2 rounded-lg bg-indigo-600 px-8 py-3 font-bold text-white shadow-lg hover:bg-indigo-700">次へ</button>) : (<p className="mt-2 text-sm text-gray-400 animate-pulse">プレイヤーの操作を待っています...</p>)}
       </div>
     </div>
   );
@@ -115,7 +114,6 @@ function ConnectionBanner({ visible }: { visible: boolean }) {
   return <div className="fixed top-0 left-0 right-0 z-40 bg-amber-500 px-4 py-2 text-center text-sm font-medium text-white shadow">⚠️ 接続が不安定です。再接続を試みています...</div>;
 }
 
-// === メインプレイコンテンツ ===
 function PlayContent() {
   const params = useParams();
   const searchParams = useSearchParams();
@@ -247,7 +245,9 @@ function PlayContent() {
     const t = data ?? []; setTeams(t); teamsRef.current = t;
   }
 
+  // ★ handleRoll はプレイヤーのみ使用（ホストは呼ばない）
   async function handleRoll() {
+    if (isHost) return; // ホストガード
     const currentSession = sessionRef.current;
     const currentCells = cellsRef.current;
     const currentQuizzes = quizzesRef.current;
@@ -284,6 +284,7 @@ function PlayContent() {
   }
 
   async function handleAnswer(choice: string) {
+    if (isHost) return; // ホストガード
     const currentSession = sessionRef.current;
     const currentTeam = teamsRef.current.find((t) => t.id === currentSession?.current_turn_team_id);
     if (!currentSession || !currentTeam || !turnState.currentQuiz || !turnState.currentCell) return;
@@ -297,6 +298,7 @@ function PlayContent() {
   }
 
   async function handleResultContinue() {
+    if (isHost) return; // ホストガード
     const currentSession = sessionRef.current;
     const currentTeam = teamsRef.current.find((t) => t.id === currentSession?.current_turn_team_id);
     if (!currentSession || !currentTeam) return;
@@ -322,10 +324,8 @@ function PlayContent() {
     setTurnState((prev) => ({ ...prev, phase: 'result', isCorrect: true, actionToApply: null, actionMessage: `${team.team_name} がゴールしました！🎉` }));
   }
 
-  // ★★★ advanceTurn 修正版 ★★★
-  // - turn_number はチームが実際に切り替わったときのみインクリメント
-  // - 休みチームはループで飛ばす（再帰的にgetNextTurnTeamを呼ばない）
   async function advanceTurn() {
+    if (isHost) return; // ホストはターン遷移しない（プレイヤーが行う）
     const supabase = supabaseRef.current;
     const { data: latestSession } = await supabase.from('game_sessions').select('*').eq('game_code', gameCode).single();
     if (!latestSession) return;
@@ -347,39 +347,31 @@ function PlayContent() {
       return;
     }
 
-    // 「もう一度」の場合: roll_again をクリアして同じチームに戻す。ターン番号は変えない
     if (isSameTeam) {
       await supabase.from('teams').update({ roll_again: false }).eq('id', nextTeam.id);
-      // current_turn_team_id は変わらないが、turnStateをリセットしてサイコロ待ちに戻す
       setTurnState(INITIAL_TURN_STATE);
       return;
     }
 
-    // チームが変わる場合: もう一度フラグをクリア
     const currentTeam = latestTeams.find((t) => t.id === currentTeamId);
     if (currentTeam?.roll_again) {
       await supabase.from('teams').update({ roll_again: false }).eq('id', currentTeamId);
     }
 
-    // ★ 休みチームをスキップするループ
     let targetTeam = nextTeam;
     const activeTeams = latestTeams.filter((t) => !t.is_finished).sort((a, b) => (a.turn_order ?? 0) - (b.turn_order ?? 0));
     let attempts = 0;
-    const maxAttempts = activeTeams.length; // 無限ループ防止
+    const maxAttempts = activeTeams.length;
 
     while (targetTeam.pause_turns > 0 && attempts < maxAttempts) {
-      // 休みターンを1消費
       await supabase.from('teams').update({ pause_turns: targetTeam.pause_turns - 1 }).eq('id', targetTeam.id);
-      // ローカルのteamsも更新
       latestTeams = latestTeams.map((t) => t.id === targetTeam.id ? { ...t, pause_turns: t.pause_turns - 1 } : t);
-      // 次のチームを探す
       const { team: afterNext } = getNextTurnTeam(latestTeams, targetTeam.id);
-      if (!afterNext || afterNext.id === targetTeam.id) break; // 全員休みなら諦め
+      if (!afterNext || afterNext.id === targetTeam.id) break;
       targetTeam = afterNext;
       attempts++;
     }
 
-    // ★ ターン番号をインクリメントしてチームを切り替え
     const newTurnNumber = latestSession.turn_number + 1;
     await supabase.from('game_sessions').update({ current_turn_team_id: targetTeam.id, turn_number: newTurnNumber }).eq('id', latestSession.id);
     setSession((prev) => prev ? { ...prev, current_turn_team_id: targetTeam.id, turn_number: newTurnNumber } : prev);
@@ -388,9 +380,10 @@ function PlayContent() {
 
   const currentTurnTeam = teams.find((t) => t.id === session?.current_turn_team_id);
   const isMyTurn = !isHost && myTeamId === session?.current_turn_team_id;
-  const canRoll = (isHost || isMyTurn) && turnState.phase === 'roll' && !rolling;
-  const canAnswer = (isMyTurn || isHost) && turnState.phase === 'quiz';
-  const canContinue = isHost || isMyTurn;
+  // ★ ホストは操作不可（観戦のみ）
+  const canRoll = isMyTurn && turnState.phase === 'roll' && !rolling;
+  const canAnswer = isMyTurn && turnState.phase === 'quiz';
+  const canContinue = isMyTurn;
 
   if (session?.status === 'finished') {
     return (<div className="flex min-h-screen flex-col items-center justify-center bg-gradient-to-b from-amber-50 to-white p-6 dark:from-gray-950 dark:to-gray-900"><div className="text-6xl mb-4">🏆</div><h1 className="mb-2 text-3xl font-bold">ゲーム終了！</h1><p className="mb-6 text-gray-500 animate-pulse">結果ページに移動します...</p><a href={`/results/${gameCode}`} className="rounded-lg bg-indigo-600 px-6 py-3 font-bold text-white hover:bg-indigo-700">結果を見る →</a></div>);
@@ -407,7 +400,11 @@ function PlayContent() {
       <ConnectionBanner visible={connectionLost} />
       <header className="border-b border-gray-200 bg-white/80 px-4 py-2 backdrop-blur dark:border-gray-800 dark:bg-gray-900/80">
         <div className="mx-auto flex max-w-5xl items-center justify-between">
-          <div><span className="text-sm font-medium">{gameSet?.name}</span><span className="ml-2 text-xs text-gray-500">ターン {session?.turn_number ?? 0}</span></div>
+          <div>
+            <span className="text-sm font-medium">{gameSet?.name}</span>
+            <span className="ml-2 text-xs text-gray-500">ターン {session?.turn_number ?? 0}</span>
+            {isHost && <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700">👁 観戦モード</span>}
+          </div>
           <div className="flex items-center gap-2">
             {currentTurnTeam && (<span className="flex items-center gap-1 rounded-full px-3 py-1 text-sm font-medium" style={{ backgroundColor: (currentTurnTeam.team_color ?? '#888') + '30' }}><span>{currentTurnTeam.team_emoji}</span><span>{currentTurnTeam.team_name}のターン</span></span>)}
           </div>
@@ -420,9 +417,8 @@ function PlayContent() {
             <div className="rounded-xl border border-gray-200 bg-white p-4 shadow dark:border-gray-800 dark:bg-gray-900">
               <DiceDisplay value={turnState.diceValue} rolling={rolling} />
               {turnState.phase === 'roll' && (<div className="mt-4 text-center">
-                {currentTurnTeam?.pause_turns ? (<p className="text-amber-600 font-medium">🚫 {currentTurnTeam.team_name}は1回休み（残り{currentTurnTeam.pause_turns}ターン）</p>)
-                : canRoll ? (<button onClick={handleRoll} className="rounded-xl bg-indigo-600 px-8 py-4 text-lg font-bold text-white shadow-lg hover:bg-indigo-700 active:scale-95 transition-transform">🎲 サイコロを振る！</button>)
-                : (<p className="text-gray-500 text-sm">{currentTurnTeam?.team_name}のターンです...</p>)}
+                {canRoll ? (<button onClick={handleRoll} className="rounded-xl bg-indigo-600 px-8 py-4 text-lg font-bold text-white shadow-lg hover:bg-indigo-700 active:scale-95 transition-transform">🎲 サイコロを振る！</button>)
+                : (<p className="text-gray-500 text-sm">{currentTurnTeam?.team_name}のターンです{isHost ? '（観戦中）' : '...'}</p>)}
               </div>)}
               {turnState.phase === 'moving' && turnState.diceValue && (<p className="mt-4 text-center text-xl font-bold text-indigo-600 animate-pulse">{turnState.diceValue} が出た！ 移動中...</p>)}
               {turnState.phase === 'next' && (<p className="mt-4 text-center text-sm text-gray-500">次のチームに交代中...</p>)}
@@ -449,8 +445,14 @@ function PlayContent() {
           </div>
         </div>
       </main>
-      {turnState.phase === 'quiz' && turnState.currentQuiz && (canAnswer || isHost) && (<QuizModal quiz={turnState.currentQuiz} timeLimit={gameSet?.answer_time_limit ?? 30} onAnswer={handleAnswer} />)}
-      {turnState.phase === 'result' && (<ResultModal isCorrect={turnState.isCorrect} explanation={turnState.currentQuiz?.explanation ?? null} action={turnState.actionToApply} actionMessage={turnState.actionMessage} onContinue={handleResultContinue} canContinue={canContinue} />)}
+      {/* ★ クイズモーダル: ホストは readOnly で表示（回答不可） */}
+      {turnState.phase === 'quiz' && turnState.currentQuiz && (
+        <QuizModal quiz={turnState.currentQuiz} timeLimit={gameSet?.answer_time_limit ?? 30} onAnswer={handleAnswer} readOnly={isHost || !canAnswer} />
+      )}
+      {/* ★ 結果モーダル: ホストは「次へ」ボタンなし */}
+      {turnState.phase === 'result' && (
+        <ResultModal isCorrect={turnState.isCorrect} explanation={turnState.currentQuiz?.explanation ?? null} action={turnState.actionToApply} actionMessage={turnState.actionMessage} onContinue={handleResultContinue} canContinue={canContinue} />
+      )}
     </div>
   );
 }
