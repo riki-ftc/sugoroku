@@ -262,7 +262,7 @@ function PlayContent() {
     setLoading(false);
   }
 
-  function handleRemoteTurnEvent(event: { event_type: string; payload: any; team_id: string }) {
+  async function handleRemoteTurnEvent(event: { event_type: string; payload: any; team_id: string }) {
     const { event_type, payload, team_id } = event;
     const currentCells = cellsRef.current;
     const currentQuizzes = quizzesRef.current;
