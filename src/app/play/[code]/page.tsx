@@ -50,7 +50,7 @@ function GameBoard({ cells, teams, columns = 5 }: { cells: Cell[]; teams: Team[]
               <span className="mt-0.5 font-mono text-[10px] text-gray-500">{cell.cell_number}</span>
               {teamsOnCell.length > 0 && (
                 <div className="absolute -bottom-1 left-1/2 flex -translate-x-1/2 gap-0.5">
-                  {teamsOnCell.map((t) => (<span key={t.id} className="flex h-5 w-5 items-center justify-center rounded-full text-xs shadow" style={{ backgroundColor: t.team_color ?? '#888' }} title={t.team_name}>{t.team_emoji ?? '\u25cf'}</span>))}
+                  {teamsOnCell.map((t) => (<span key={t.id} className="flex h-5 w-5 items-center justify-center rounded-full text-xs shadow" style={{ backgroundColor: t.team_color ?? '#888' }} title={t.team_name}>{t.team_emoji ?? '●'}</span>))}
                 </div>
               )}
             </div>
@@ -78,13 +78,13 @@ function QuizModal({ quiz, timeLimit, onAnswer, readOnly }: { quiz: Quiz; timeLi
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl dark:bg-gray-900">
-        {timeLimit > 0 && (<div className="mb-4 flex items-center justify-between"><span className="text-sm text-gray-500">\u6b8b\u308a\u6642\u9593</span><span className={`rounded-full px-3 py-1 text-sm font-bold ${remaining <= 5 ? 'bg-red-100 text-red-700 animate-pulse' : 'bg-blue-100 text-blue-700'}`}>{remaining}\u79d2</span></div>)}
+        {timeLimit > 0 && (<div className="mb-4 flex items-center justify-between"><span className="text-sm text-gray-500">残り時間</span><span className={`rounded-full px-3 py-1 text-sm font-bold ${remaining <= 5 ? 'bg-red-100 text-red-700 animate-pulse' : 'bg-blue-100 text-blue-700'}`}>{remaining}秒</span></div>)}
         <div className="mb-3 flex gap-2 text-xs">
           {quiz.category && <span className="rounded-full bg-gray-100 px-2 py-0.5 text-gray-600 dark:bg-gray-800 dark:text-gray-400">{quiz.category}</span>}
-          {quiz.difficulty && <span className={`rounded-full px-2 py-0.5 ${quiz.difficulty === '\u6613' ? 'bg-green-100 text-green-700' : quiz.difficulty === '\u4e2d' ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700'}`}>{quiz.difficulty}</span>}
+          {quiz.difficulty && <span className={`rounded-full px-2 py-0.5 ${quiz.difficulty === '易' ? 'bg-green-100 text-green-700' : quiz.difficulty === '中' ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700'}`}>{quiz.difficulty}</span>}
         </div>
         <h3 className="mb-6 text-lg font-bold leading-relaxed">{quiz.question}</h3>
-        {readOnly && <p className="mb-4 text-sm text-gray-400 text-center animate-pulse">\u30d7\u30ec\u30a4\u30e4\u30fc\u306e\u56de\u7b54\u3092\u5f85\u3063\u3066\u3044\u307e\u3059...</p>}
+        {readOnly && <p className="mb-4 text-sm text-gray-400 text-center animate-pulse">プレイヤーの回答を待っています...</p>}
         <div className="space-y-3">
           {choices.map(({ key, text }) => (<button key={key} onClick={() => handleSelect(key)} disabled={!!selected || readOnly}
             className={`w-full rounded-xl border-2 px-4 py-3 text-left font-medium transition-all ${selected === key ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-gray-200 bg-gray-50 hover:border-indigo-300 hover:bg-indigo-50/50 dark:border-gray-700 dark:bg-gray-800'} ${selected && selected !== key ? 'opacity-50' : ''} ${readOnly ? 'cursor-default' : ''}`}>
@@ -95,36 +95,43 @@ function QuizModal({ quiz, timeLimit, onAnswer, readOnly }: { quiz: Quiz; timeLi
   );
 }
 
+// ★ ResultModal: autoCloseSeconds で自動消去、canContinue でボタン表示
 function ResultModal({ isCorrect, explanation, action, actionMessage, onContinue, canContinue, autoCloseSeconds }: {
   isCorrect: boolean | null; explanation: string | null; action: Action | null; actionMessage: string | null;
   onContinue: () => void; canContinue: boolean; autoCloseSeconds?: number;
 }) {
   const [countdown, setCountdown] = useState(autoCloseSeconds ?? 0);
   const calledRef = useRef(false);
+
   useEffect(() => {
     if (!autoCloseSeconds || autoCloseSeconds <= 0) return;
-    calledRef.current = false; setCountdown(autoCloseSeconds);
+    calledRef.current = false;
+    setCountdown(autoCloseSeconds);
     const timer = setInterval(() => {
-      setCountdown((prev) => { if (prev <= 1) { clearInterval(timer); if (!calledRef.current) { calledRef.current = true; onContinue(); } return 0; } return prev - 1; });
+      setCountdown((prev) => {
+        if (prev <= 1) { clearInterval(timer); if (!calledRef.current) { calledRef.current = true; onContinue(); } return 0; }
+        return prev - 1;
+      });
     }, 1000);
     return () => clearInterval(timer);
   }, [autoCloseSeconds, onContinue]);
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <div className="w-full max-w-md rounded-2xl bg-white p-6 text-center shadow-2xl dark:bg-gray-900">
-        <div className="mb-4 text-6xl">{isCorrect === null ? '\u23f0' : isCorrect ? '\ud83c\udf89' : '\ud83d\ude22'}</div>
-        <h3 className={`mb-2 text-2xl font-bold ${isCorrect === null ? 'text-gray-700' : isCorrect ? 'text-green-600' : 'text-red-600'}`}>{isCorrect === null ? '\u6642\u9593\u5207\u308c\uff01' : isCorrect ? '\u6b63\u89e3\uff01' : '\u4e0d\u6b63\u89e3...'}</h3>
+        <div className="mb-4 text-6xl">{isCorrect === null ? '⏰' : isCorrect ? '🎉' : '😢'}</div>
+        <h3 className={`mb-2 text-2xl font-bold ${isCorrect === null ? 'text-gray-700' : isCorrect ? 'text-green-600' : 'text-red-600'}`}>{isCorrect === null ? '時間切れ！' : isCorrect ? '正解！' : '不正解...'}</h3>
         {explanation && <p className="mb-4 text-sm text-gray-600 dark:text-gray-400">{explanation}</p>}
-        {(action || actionMessage) && (<div className="mb-4 rounded-lg bg-indigo-50 p-3 dark:bg-indigo-950"><p className="font-medium text-indigo-700 dark:text-indigo-300">{actionMessage ?? action?.message ?? `${action?.action_type}${action?.value ? ` ${action.value}\u30de\u30b9` : ''}`}</p></div>)}
+        {(action || actionMessage) && (<div className="mb-4 rounded-lg bg-indigo-50 p-3 dark:bg-indigo-950"><p className="font-medium text-indigo-700 dark:text-indigo-300">{actionMessage ?? action?.message ?? `${action?.action_type}${action?.value ? ` ${action.value}マス` : ''}`}</p></div>)}
         {canContinue ? (
           <div>
-            <button onClick={() => { calledRef.current = true; onContinue(); }} className="mt-2 rounded-lg bg-indigo-600 px-8 py-3 font-bold text-white shadow-lg hover:bg-indigo-700">\u6b21\u3078</button>
-            {autoCloseSeconds && autoCloseSeconds > 0 && <p className="mt-2 text-xs text-gray-400">{countdown}\u79d2\u5f8c\u306b\u81ea\u52d5\u3067\u9032\u307f\u307e\u3059</p>}
+            <button onClick={() => { calledRef.current = true; onContinue(); }} className="mt-2 rounded-lg bg-indigo-600 px-8 py-3 font-bold text-white shadow-lg hover:bg-indigo-700">次へ</button>
+            {autoCloseSeconds && autoCloseSeconds > 0 && <p className="mt-2 text-xs text-gray-400">{countdown}秒後に自動で進みます</p>}
           </div>
         ) : autoCloseSeconds && autoCloseSeconds > 0 ? (
-          <p className="mt-2 text-sm text-gray-400">{countdown}\u79d2\u5f8c\u306b\u81ea\u52d5\u3067\u9589\u3058\u307e\u3059...</p>
+          <p className="mt-2 text-sm text-gray-400">{countdown}秒後に自動で閉じます...</p>
         ) : (
-          <p className="mt-2 text-sm text-gray-400 animate-pulse">\u30d7\u30ec\u30a4\u30e4\u30fc\u306e\u64cd\u4f5c\u3092\u5f85\u3063\u3066\u3044\u307e\u3059...</p>
+          <p className="mt-2 text-sm text-gray-400 animate-pulse">プレイヤーの操作を待っています...</p>
         )}
       </div>
     </div>
@@ -133,7 +140,7 @@ function ResultModal({ isCorrect, explanation, action, actionMessage, onContinue
 
 function ConnectionBanner({ visible }: { visible: boolean }) {
   if (!visible) return null;
-  return <div className="fixed top-0 left-0 right-0 z-40 bg-amber-500 px-4 py-2 text-center text-sm font-medium text-white shadow">\u26a0\ufe0f \u63a5\u7d9a\u304c\u4e0d\u5b89\u5b9a\u3067\u3059\u3002\u518d\u63a5\u7d9a\u3092\u8a66\u307f\u3066\u3044\u307e\u3059...</div>;
+  return <div className="fixed top-0 left-0 right-0 z-40 bg-amber-500 px-4 py-2 text-center text-sm font-medium text-white shadow">⚠️ 接続が不安定です。再接続を試みています...</div>;
 }
 
 function PlayContent() {
@@ -156,6 +163,7 @@ function PlayContent() {
   const [myTeamId, setMyTeamId] = useState<string | null>(null);
   const [connectionLost, setConnectionLost] = useState(false);
   const [isGoalResult, setIsGoalResult] = useState(false);
+  const [realtimeReady, setRealtimeReady] = useState(false);
 
   const supabaseRef = useRef(createClient());
   const sessionRef = useRef<GameSession | null>(null);
@@ -180,6 +188,7 @@ function PlayContent() {
     }
   }, [gameCode, isHost]);
 
+  // ★ ステップ1: まずsession取得→Realtime購読開始→SUBSCRIBED待ち→データ取得
   useEffect(() => {
     let cancelled = false;
     initGame(cancelled);
@@ -192,15 +201,19 @@ function PlayContent() {
   async function initGame(cancelled: boolean) {
     setLoading(true);
     const supabase = supabaseRef.current;
+
+    // 1. まずsessionだけ取得
     const { data: sess, error: sessErr } = await supabase.from('game_sessions').select('*').eq('game_code', gameCode).single();
-    if (sessErr || !sess) { setError('\u30b2\u30fc\u30e0\u30bb\u30c3\u30b7\u30e7\u30f3\u304c\u898b\u3064\u304b\u308a\u307e\u305b\u3093\u3002\u30b3\u30fc\u30c9\u3092\u78ba\u8a8d\u3057\u3066\u304f\u3060\u3055\u3044\u3002'); setLoading(false); return; }
+    if (sessErr || !sess) { setError('ゲームセッションが見つかりません。コードを確認してください。'); setLoading(false); return; }
     if (sess.status === 'finished') { router.push(`/results/${gameCode}`); return; }
     if (cancelled) return;
     sessionIdRef.current = sess.id;
+
+    // 2. Realtime購読を開始して、SUBSCRIBEDを待つ
     if (channelRef.current) { supabase.removeChannel(channelRef.current); }
     const sessionId = sess.id;
     const channel = supabase
-      .channel(`play:${gameCode}:${Date.now()}`)
+      .channel(`play:${gameCode}:${Date.now()}`) // ユニークなチャネル名
       .on('postgres_changes', { event: '*', schema: 'public', table: 'teams', filter: `game_session_id=eq.${sessionId}` }, () => { fetchTeams(sessionId); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'game_sessions', filter: `id=eq.${sessionId}` }, (payload) => {
         const updated = payload.new as GameSession;
@@ -217,6 +230,8 @@ function PlayContent() {
       .subscribe(async (status) => {
         if (status === 'SUBSCRIBED') {
           setConnectionLost(false);
+          setRealtimeReady(true);
+          // 3. SUBSCRIBEDになってから全データを取得（この時点からRealtimeイベントを逃さない）
           await loadAllGameData(sess);
         }
       });
@@ -235,6 +250,7 @@ function PlayContent() {
     ]);
     setCells(cellsRes.data ?? []); setQuizzes(quizzesRes.data ?? []); setActions(actionsRes.data ?? []);
     cellsRef.current = cellsRes.data ?? []; quizzesRef.current = quizzesRes.data ?? []; actionsRef.current = actionsRes.data ?? [];
+    // 最新のsessionも再取得（subscribe中に変わった可能性）
     const { data: latestSess } = await supabase.from('game_sessions').select('*').eq('id', sess.id).single();
     if (latestSess) { setSession(latestSess); sessionRef.current = latestSess; }
     await fetchTeams(sess.id);
@@ -254,7 +270,7 @@ function PlayContent() {
           if (payload.target_position >= maxCell) {
             const team = teamsRef.current.find((t) => t.id === team_id);
             setIsGoalResult(true);
-            setTurnState((prev) => ({ ...prev, phase: 'result', isCorrect: true, actionToApply: null, actionMessage: `${team?.team_name ?? '\u30c1\u30fc\u30e0'} \u304c\u30b4\u30fc\u30eb\u3057\u307e\u3057\u305f\uff01\ud83c\udf89` }));
+            setTurnState((prev) => ({ ...prev, phase: 'result', isCorrect: true, actionToApply: null, actionMessage: `${team?.team_name ?? 'チーム'} がゴールしました！🎉` }));
             return;
           }
           const cell = getCellByNumber(currentCells, payload.target_position);
@@ -262,7 +278,7 @@ function PlayContent() {
             const quiz = currentQuizzes.find((q) => q.id === cell.quiz_id);
             if (quiz) { setTurnState((prev) => ({ ...prev, phase: 'quiz', currentCell: cell, currentQuiz: quiz })); }
             else { setTurnState((prev) => ({ ...prev, phase: 'next', currentCell: cell })); }
-          } else if (cell && (cell.cell_type === '\u30a4\u30d9\u30f3\u30c8' || cell.cell_type === '\u30dc\u30fc\u30ca\u30b9') && cell.correct_action_id) {
+          } else if (cell && (cell.cell_type === 'イベント' || cell.cell_type === 'ボーナス') && cell.correct_action_id) {
             const action = actionsRef.current.find((a) => a.id === cell.correct_action_id);
             if (action) { setTurnState((prev) => ({ ...prev, phase: 'result', currentCell: cell, isCorrect: true, actionToApply: action, actionMessage: action.message })); }
             else { setTurnState((prev) => ({ ...prev, phase: 'next', currentCell: cell })); }
@@ -312,7 +328,7 @@ function PlayContent() {
           const quiz = currentQuizzes.find((q) => q.id === cell.quiz_id);
           if (quiz) { setTurnState((prev) => ({ ...prev, phase: 'quiz', currentCell: cell, currentQuiz: quiz })); }
           else { setTurnState((prev) => ({ ...prev, phase: 'next', currentCell: cell })); isActingRef.current = false; setTimeout(() => advanceTurn(), 1500); }
-        } else if (cell && (cell.cell_type === '\u30a4\u30d9\u30f3\u30c8' || cell.cell_type === '\u30dc\u30fc\u30ca\u30b9') && cell.correct_action_id) {
+        } else if (cell && (cell.cell_type === 'イベント' || cell.cell_type === 'ボーナス') && cell.correct_action_id) {
           const action = actionsRef.current.find((a) => a.id === cell.correct_action_id);
           if (action) { setTurnState((prev) => ({ ...prev, phase: 'result', currentCell: cell, isCorrect: true, actionToApply: action, actionMessage: action.message })); }
           else { setTurnState((prev) => ({ ...prev, phase: 'next', currentCell: cell })); isActingRef.current = false; setTimeout(() => advanceTurn(), 1500); }
@@ -335,14 +351,24 @@ function PlayContent() {
     setTurnState((prev) => ({ ...prev, phase: 'result', selectedAnswer: choice, isCorrect: isTimeout ? null : isCorrect, actionToApply: action, actionMessage: action?.message ?? null }));
   }
 
-  function dismissRemoteResult() { setTurnState(INITIAL_TURN_STATE); setIsGoalResult(false); }
+  // ★ リモートの結果モーダル自動消去用
+  function dismissRemoteResult() {
+    setTurnState(INITIAL_TURN_STATE);
+    setIsGoalResult(false);
+  }
 
   async function handleResultContinue() {
     if (isHost) return;
     const currentSession = sessionRef.current;
     const currentTeam = teamsRef.current.find((t) => t.id === currentSession?.current_turn_team_id);
     if (!currentSession || !currentTeam) return;
-    if (isGoalResult) { setIsGoalResult(false); isActingRef.current = false; await fetchTeams(currentSession.id); setTimeout(() => advanceTurn(), 500); return; }
+    if (isGoalResult) {
+      setIsGoalResult(false);
+      isActingRef.current = false;
+      await fetchTeams(currentSession.id);
+      setTimeout(() => advanceTurn(), 500);
+      return;
+    }
     const action = turnState.actionToApply;
     if (action) {
       const maxCell = Math.max(...cellsRef.current.map((c) => c.cell_number));
@@ -353,7 +379,7 @@ function PlayContent() {
         await supabaseRef.current.from('teams').update({ is_finished: true, finished_turn: currentSession.turn_number }).eq('id', currentTeam.id);
         await fetchTeams(currentSession.id);
         setIsGoalResult(true);
-        setTurnState((prev) => ({ ...prev, phase: 'result', isCorrect: true, actionToApply: null, currentQuiz: null, actionMessage: `${currentTeam.team_name} \u304c\u30b4\u30fc\u30eb\u3057\u307e\u3057\u305f\uff01\ud83c\udf89` }));
+        setTurnState((prev) => ({ ...prev, phase: 'result', isCorrect: true, actionToApply: null, currentQuiz: null, actionMessage: `${currentTeam.team_name} がゴールしました！🎉` }));
         isActingRef.current = false;
         return;
       }
@@ -370,7 +396,7 @@ function PlayContent() {
     await supabaseRef.current.from('teams').update({ is_finished: true, finished_turn: sess.turn_number, current_position: maxCell }).eq('id', team.id);
     await fetchTeams(sess.id);
     setIsGoalResult(true);
-    setTurnState((prev) => ({ ...prev, phase: 'result', isCorrect: true, actionToApply: null, actionMessage: `${team.team_name} \u304c\u30b4\u30fc\u30eb\u3057\u307e\u3057\u305f\uff01\ud83c\udf89` }));
+    setTurnState((prev) => ({ ...prev, phase: 'result', isCorrect: true, actionToApply: null, actionMessage: `${team.team_name} がゴールしました！🎉` }));
   }
 
   async function advanceTurn() {
@@ -392,7 +418,11 @@ function PlayContent() {
       setTimeout(() => router.push(`/results/${gameCode}`), 2000);
       return;
     }
-    if (isSameTeam) { await supabase.from('teams').update({ roll_again: false }).eq('id', nextTeam.id); setTurnState(INITIAL_TURN_STATE); return; }
+    if (isSameTeam) {
+      await supabase.from('teams').update({ roll_again: false }).eq('id', nextTeam.id);
+      setTurnState(INITIAL_TURN_STATE);
+      return;
+    }
     const currentTeam = latestTeams.find((t) => t.id === currentTeamId);
     if (currentTeam?.roll_again) { await supabase.from('teams').update({ roll_again: false }).eq('id', currentTeamId); }
     let targetTeam = nextTeam;
@@ -417,17 +447,22 @@ function PlayContent() {
   const canRoll = isMyTurn && turnState.phase === 'roll' && !rolling;
   const canAnswer = isMyTurn && turnState.phase === 'quiz';
   const canContinue = isMyTurn;
+
+  // ★ 結果モーダルの自動消去ロジック
+  // - ゴール結果: 全員5秒で自動消去 + 操作者は手動でも消せる
+  // - 通常結果 + 自分のターン: 手動のみ
+  // - 通常結果 + 他人のターン/ホスト: 3秒で自動消去
   const resultAutoClose = isGoalResult ? 5 : (!canContinue ? 3 : undefined);
   const resultOnContinue = canContinue ? handleResultContinue : dismissRemoteResult;
 
   if (session?.status === 'finished') {
-    return (<div className="flex min-h-screen flex-col items-center justify-center bg-gradient-to-b from-amber-50 to-white p-6 dark:from-gray-950 dark:to-gray-900"><div className="text-6xl mb-4">\ud83c\udfc6</div><h1 className="mb-2 text-3xl font-bold">\u30b2\u30fc\u30e0\u7d42\u4e86\uff01</h1><p className="mb-6 text-gray-500 animate-pulse">\u7d50\u679c\u30da\u30fc\u30b8\u306b\u79fb\u52d5\u3057\u307e\u3059...</p><a href={`/results/${gameCode}`} className="rounded-lg bg-indigo-600 px-6 py-3 font-bold text-white hover:bg-indigo-700">\u7d50\u679c\u3092\u898b\u308b \u2192</a></div>);
+    return (<div className="flex min-h-screen flex-col items-center justify-center bg-gradient-to-b from-amber-50 to-white p-6 dark:from-gray-950 dark:to-gray-900"><div className="text-6xl mb-4">🏆</div><h1 className="mb-2 text-3xl font-bold">ゲーム終了！</h1><p className="mb-6 text-gray-500 animate-pulse">結果ページに移動します...</p><a href={`/results/${gameCode}`} className="rounded-lg bg-indigo-600 px-6 py-3 font-bold text-white hover:bg-indigo-700">結果を見る →</a></div>);
   }
   if (loading) {
-    return (<div className="flex min-h-screen items-center justify-center"><div className="text-center"><div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-4 border-indigo-500 border-t-transparent" /><p className="text-gray-500">\u30b2\u30fc\u30e0\u3092\u8aad\u307f\u8fbc\u307f\u4e2d...</p></div></div>);
+    return (<div className="flex min-h-screen items-center justify-center"><div className="text-center"><div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-4 border-indigo-500 border-t-transparent" /><p className="text-gray-500">ゲームを読み込み中...</p></div></div>);
   }
   if (error) {
-    return (<div className="flex min-h-screen flex-col items-center justify-center gap-4 p-6"><div className="text-4xl">\ud83d\ude35</div><p className="text-red-600 font-medium">{error}</p><div className="flex gap-3"><button onClick={() => { setError(null); initGame(false); }} className="rounded-lg bg-indigo-600 px-6 py-2 font-medium text-white hover:bg-indigo-700">\u518d\u8aad\u307f\u8fbc\u307f</button><a href="/" className="rounded-lg border border-gray-300 px-6 py-2 font-medium text-gray-700 hover:bg-gray-50">\u30c8\u30c3\u30d7\u3078</a></div></div>);
+    return (<div className="flex min-h-screen flex-col items-center justify-center gap-4 p-6"><div className="text-4xl">😵</div><p className="text-red-600 font-medium">{error}</p><div className="flex gap-3"><button onClick={() => { setError(null); initGame(false); }} className="rounded-lg bg-indigo-600 px-6 py-2 font-medium text-white hover:bg-indigo-700">再読み込み</button><a href="/" className="rounded-lg border border-gray-300 px-6 py-2 font-medium text-gray-700 hover:bg-gray-50">トップへ</a></div></div>);
   }
 
   return (
@@ -437,11 +472,11 @@ function PlayContent() {
         <div className="mx-auto flex max-w-5xl items-center justify-between">
           <div>
             <span className="text-sm font-medium">{gameSet?.name}</span>
-            <span className="ml-2 text-xs text-gray-500">\u30bf\u30fc\u30f3 {session?.turn_number ?? 0}</span>
-            {isHost && <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700">\ud83d\udc41 \u89b3\u6226\u30e2\u30fc\u30c9</span>}
+            <span className="ml-2 text-xs text-gray-500">ターン {session?.turn_number ?? 0}</span>
+            {isHost && <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700">👁 観戦モード</span>}
           </div>
           <div className="flex items-center gap-2">
-            {currentTurnTeam && (<span className="flex items-center gap-1 rounded-full px-3 py-1 text-sm font-medium" style={{ backgroundColor: (currentTurnTeam.team_color ?? '#888') + '30' }}><span>{currentTurnTeam.team_emoji}</span><span>{currentTurnTeam.team_name}\u306e\u30bf\u30fc\u30f3</span></span>)}
+            {currentTurnTeam && (<span className="flex items-center gap-1 rounded-full px-3 py-1 text-sm font-medium" style={{ backgroundColor: (currentTurnTeam.team_color ?? '#888') + '30' }}><span>{currentTurnTeam.team_emoji}</span><span>{currentTurnTeam.team_name}のターン</span></span>)}
           </div>
         </div>
       </header>
@@ -452,14 +487,14 @@ function PlayContent() {
             <div className="rounded-xl border border-gray-200 bg-white p-4 shadow dark:border-gray-800 dark:bg-gray-900">
               <DiceDisplay value={turnState.diceValue} rolling={rolling} />
               {turnState.phase === 'roll' && (<div className="mt-4 text-center">
-                {canRoll ? (<button onClick={handleRoll} className="rounded-xl bg-indigo-600 px-8 py-4 text-lg font-bold text-white shadow-lg hover:bg-indigo-700 active:scale-95 transition-transform">\ud83c\udfb2 \u30b5\u30a4\u30b3\u30ed\u3092\u632f\u308b\uff01</button>)
-                : (<p className="text-gray-500 text-sm">{currentTurnTeam?.team_name}\u306e\u30bf\u30fc\u30f3\u3067\u3059{isHost ? '\uff08\u89b3\u6226\u4e2d\uff09' : '...'}</p>)}
+                {canRoll ? (<button onClick={handleRoll} className="rounded-xl bg-indigo-600 px-8 py-4 text-lg font-bold text-white shadow-lg hover:bg-indigo-700 active:scale-95 transition-transform">🎲 サイコロを振る！</button>)
+                : (<p className="text-gray-500 text-sm">{currentTurnTeam?.team_name}のターンです{isHost ? '（観戦中）' : '...'}</p>)}
               </div>)}
-              {turnState.phase === 'moving' && turnState.diceValue && (<p className="mt-4 text-center text-xl font-bold text-indigo-600 animate-pulse">{turnState.diceValue} \u304c\u51fa\u305f\uff01 \u79fb\u52d5\u4e2d...</p>)}
-              {turnState.phase === 'next' && (<p className="mt-4 text-center text-sm text-gray-500">\u6b21\u306e\u30c1\u30fc\u30e0\u306b\u4ea4\u4ee3\u4e2d...</p>)}
+              {turnState.phase === 'moving' && turnState.diceValue && (<p className="mt-4 text-center text-xl font-bold text-indigo-600 animate-pulse">{turnState.diceValue} が出た！ 移動中...</p>)}
+              {turnState.phase === 'next' && (<p className="mt-4 text-center text-sm text-gray-500">次のチームに交代中...</p>)}
             </div>
             <div className="rounded-xl border border-gray-200 bg-white p-4 shadow dark:border-gray-800 dark:bg-gray-900">
-              <h3 className="mb-3 text-sm font-semibold text-gray-700 dark:text-gray-300">\u30c1\u30fc\u30e0\u72b6\u6cc1</h3>
+              <h3 className="mb-3 text-sm font-semibold text-gray-700 dark:text-gray-300">チーム状況</h3>
               <div className="space-y-2">
                 {[...teams].sort((a, b) => b.current_position - a.current_position).map((team) => {
                   const maxCell = cells.length > 0 ? Math.max(...cells.map((c) => c.cell_number)) : 1;
@@ -469,7 +504,7 @@ function PlayContent() {
                   return (<div key={team.id} className={`rounded-lg p-2 ${isCurrent ? 'ring-2 ring-indigo-500' : ''} ${isMe ? 'bg-indigo-50 dark:bg-indigo-950' : ''}`}>
                     <div className="flex items-center gap-2">
                       <span className="flex h-7 w-7 items-center justify-center rounded-full text-sm" style={{ backgroundColor: team.team_color ?? '#888' }}>{team.team_emoji}</span>
-                      <span className="flex-1 text-sm font-medium">{team.team_name}{isMe && <span className="ml-1 text-xs text-indigo-600">\uff08\u3042\u306a\u305f\uff09</span>}{team.is_finished && <span className="ml-1 text-xs">\ud83c\udfc1</span>}</span>
+                      <span className="flex-1 text-sm font-medium">{team.team_name}{isMe && <span className="ml-1 text-xs text-indigo-600">（あなた）</span>}{team.is_finished && <span className="ml-1 text-xs">🏁</span>}</span>
                       <span className="text-xs text-gray-500">{team.current_position}/{maxCell}</span>
                     </div>
                     <div className="mt-1 h-1.5 rounded-full bg-gray-200 dark:bg-gray-700"><div className="h-full rounded-full transition-all duration-500" style={{ width: `${progress}%`, backgroundColor: team.team_color ?? '#888' }} /></div>
@@ -491,5 +526,5 @@ function PlayContent() {
 }
 
 export default function PlayPage() {
-  return (<Suspense fallback={<div className="flex min-h-screen items-center justify-center"><div className="text-center"><div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-4 border-indigo-500 border-t-transparent" /><p className="text-gray-500">\u30b2\u30fc\u30e0\u3092\u8aad\u307f\u8fbc\u307f\u4e2d...</p></div></div>}><PlayContent /></Suspense>);
+  return (<Suspense fallback={<div className="flex min-h-screen items-center justify-center"><div className="text-center"><div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-4 border-indigo-500 border-t-transparent" /><p className="text-gray-500">ゲームを読み込み中...</p></div></div>}><PlayContent /></Suspense>);
 }
