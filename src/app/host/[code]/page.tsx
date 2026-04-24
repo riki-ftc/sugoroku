@@ -101,10 +101,11 @@ export default function HostPage() {
           const updated = payload.new as GameSession;
           setSession(updated);
           if (updated.status === 'playing') {
-            router.push(`/play/${gameCode}?host=true`);
+            // ★ フルページロードでプレイ画面へ遷移（Realtime確実に初期化）
+            window.location.href = `/play/${gameCode}?host=true`;
           }
           if (updated.status === 'finished') {
-            router.push(`/results/${gameCode}`);
+            window.location.href = `/results/${gameCode}`;
           }
         }
       )
@@ -131,15 +132,13 @@ export default function HostPage() {
       return;
     }
 
-    // 終了済みゲームは結果ページへリダイレクト
     if (sessionData.status === 'finished') {
-      router.push(`/results/${gameCode}`);
+      window.location.href = `/results/${gameCode}`;
       return;
     }
 
-    // プレイ中ゲームはプレイ画面へリダイレクト
     if (sessionData.status === 'playing') {
-      router.push(`/play/${gameCode}?host=true`);
+      window.location.href = `/play/${gameCode}?host=true`;
       return;
     }
 
@@ -188,6 +187,7 @@ export default function HostPage() {
       setError('ゲーム開始に失敗しました: ' + updateErr.message);
       setStarting(false);
     }
+    // ★ Realtimeでstatus=playingを検知してwindow.location.hrefで遷移
   }
 
   if (loading) {

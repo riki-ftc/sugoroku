@@ -47,26 +47,22 @@ export default function LobbyPage() {
 
   const supabaseRef = useRef(createClient());
 
-  // チーム情報をsessionStorageから取得
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const stored = sessionStorage.getItem(`team_${gameCode}`);
       if (stored) {
         setMyTeam(JSON.parse(stored));
       } else {
-        // チーム情報がない → 参加画面にリダイレクト
         router.push(`/join/${gameCode}`);
       }
     }
   }, [gameCode, router]);
 
-  // 初期データ取得
   useEffect(() => {
     if (!myTeam) return;
     fetchData();
   }, [gameCode, myTeam]);
 
-  // 待機ドットアニメーション
   useEffect(() => {
     const interval = setInterval(() => {
       setDots((prev) => (prev.length >= 3 ? '' : prev + '.'));
@@ -74,7 +70,6 @@ export default function LobbyPage() {
     return () => clearInterval(interval);
   }, []);
 
-  // Realtime購読
   useEffect(() => {
     if (!session) return;
     const supabase = supabaseRef.current;
@@ -105,8 +100,8 @@ export default function LobbyPage() {
           const updated = payload.new as GameSession;
           setSession(updated);
           if (updated.status === 'playing') {
-            // ゲーム開始 → プレイ画面へ遷移
-            router.push(`/play/${gameCode}`);
+            // ★ フルページロードでプレイ画面へ遷移（Realtime確実に初期化）
+            window.location.href = `/play/${gameCode}`;
           }
         }
       )
@@ -133,9 +128,9 @@ export default function LobbyPage() {
       return;
     }
 
-    // 既に開始していたらプレイ画面へ
     if (sessionData.status === 'playing') {
-      router.push(`/play/${gameCode}`);
+      // ★ フルページロードで遷移
+      window.location.href = `/play/${gameCode}`;
       return;
     }
 
@@ -189,7 +184,6 @@ export default function LobbyPage() {
   return (
     <main className="flex min-h-screen flex-col items-center bg-gradient-to-b from-indigo-50 to-white dark:from-gray-950 dark:to-gray-900">
       <div className="w-full max-w-md space-y-6 p-6">
-        {/* 自分のチームカード */}
         <div
           className="rounded-2xl border-2 p-6 text-center shadow-lg"
           style={{ borderColor: myTeam.teamColor, backgroundColor: myTeam.teamColor + '10' }}
@@ -204,7 +198,6 @@ export default function LobbyPage() {
           <p className="mt-1 text-sm text-gray-500">参加済み</p>
         </div>
 
-        {/* 待機メッセージ */}
         <div className="rounded-xl bg-white p-6 text-center shadow-md dark:bg-gray-900">
           <div className="text-3xl">
             🎮
@@ -223,7 +216,6 @@ export default function LobbyPage() {
           )}
         </div>
 
-        {/* 参加チーム一覧 */}
         <div>
           <h4 className="mb-3 text-sm font-medium text-gray-600 dark:text-gray-400">
             参加チーム（{teams.length}）
@@ -266,7 +258,6 @@ export default function LobbyPage() {
           </div>
         </div>
 
-        {/* フッター */}
         <p className="text-center text-xs text-gray-400">
           コード: {gameCode}
         </p>
