@@ -95,10 +95,10 @@ function QuizModal({ quiz, timeLimit, onAnswer, readOnly }: { quiz: Quiz; timeLi
   );
 }
 
-// ★ ResultModal: autoCloseSeconds で自動消去、canContinue でボタン表示
-function ResultModal({ isCorrect, explanation, action, actionMessage, onContinue, canContinue, autoCloseSeconds }: {
+// ★ ResultModal: resultType で表示を分岐（quiz / event / goal）
+function ResultModal({ isCorrect, explanation, action, actionMessage, onContinue, canContinue, autoCloseSeconds, resultType }: {
   isCorrect: boolean | null; explanation: string | null; action: Action | null; actionMessage: string | null;
-  onContinue: () => void; canContinue: boolean; autoCloseSeconds?: number;
+  onContinue: () => void; canContinue: boolean; autoCloseSeconds?: number; resultType?: 'quiz' | 'event' | 'goal';
 }) {
   const [countdown, setCountdown] = useState(autoCloseSeconds ?? 0);
   const calledRef = useRef(false);
@@ -116,11 +116,16 @@ function ResultModal({ isCorrect, explanation, action, actionMessage, onContinue
     return () => clearInterval(timer);
   }, [autoCloseSeconds, onContinue]);
 
+  // resultType に応じて絵文字とタイトルを変える
+  const emoji = resultType === 'goal' ? '🏁' : resultType === 'event' ? '⭐' : isCorrect === null ? '⏰' : isCorrect ? '🎉' : '😢';
+  const title = resultType === 'goal' ? 'ゴール！' : resultType === 'event' ? 'イベント！' : isCorrect === null ? '時間切れ！' : isCorrect ? '正解！' : '不正解...';
+  const titleColor = resultType === 'goal' ? 'text-amber-600' : resultType === 'event' ? 'text-indigo-600' : isCorrect === null ? 'text-gray-700' : isCorrect ? 'text-green-600' : 'text-red-600';
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <div className="w-full max-w-md rounded-2xl bg-white p-6 text-center shadow-2xl dark:bg-gray-900">
-        <div className="mb-4 text-6xl">{isCorrect === null ? '⏰' : isCorrect ? '🎉' : '😢'}</div>
-        <h3 className={`mb-2 text-2xl font-bold ${isCorrect === null ? 'text-gray-700' : isCorrect ? 'text-green-600' : 'text-red-600'}`}>{isCorrect === null ? '時間切れ！' : isCorrect ? '正解！' : '不正解...'}</h3>
+        <div className="mb-4 text-6xl">{emoji}</div>
+        <h3 className={`mb-2 text-2xl font-bold ${titleColor}`}>{title}</h3>
         {explanation && <p className="mb-4 text-sm text-gray-600 dark:text-gray-400">{explanation}</p>}
         {(action || actionMessage) && (<div className="mb-4 rounded-lg bg-indigo-50 p-3 dark:bg-indigo-950"><p className="font-medium text-indigo-700 dark:text-indigo-300">{actionMessage ?? action?.message ?? `${action?.action_type}${action?.value ? ` ${action.value}マス` : ''}`}</p></div>)}
         {canContinue ? (
@@ -163,7 +168,7 @@ function PlayContent() {
   const [myTeamId, setMyTeamId] = useState<string | null>(null);
   const [connectionLost, setConnectionLost] = useState(false);
   const [isGoalResult, setIsGoalResult] = useState(false);
-  const [realtimeReady, setRealtimeReady] = useState(false);
+  const [resultType, setResultType] = useState<'quiz' | 'event' | 'goal'>('quiz');
 
   const supabaseRef = useRef(createClient());
   const sessionRef = useRef<GameSession | null>(null);
@@ -270,6 +275,7 @@ function PlayContent() {
           if (payload.target_position >= maxCell) {
             const team = teamsRef.current.find((t) => t.id === team_id);
             setIsGoalResult(true);
+            setResultType('goal');
             setTurnState((prev) => ({ ...prev, phase: 'result', isCorrect: true, actionToApply: null, actionMessage: `${team?.team_name ?? 'チーム'} がゴールしました！🎉` }));
             return;
           }
@@ -280,7 +286,7 @@ function PlayContent() {
             else { setTurnState((prev) => ({ ...prev, phase: 'next', currentCell: cell })); }
           } else if (cell && (cell.cell_type === 'イベント' || cell.cell_type === 'ボーナス') && cell.correct_action_id) {
             const action = actionsRef.current.find((a) => a.id === cell.correct_action_id);
-            if (action) { setTurnState((prev) => ({ ...prev, phase: 'result', currentCell: cell, isCorrect: true, actionToApply: action, actionMessage: action.message })); }
+            if (action) { setResultType('event'); setTurnState((prev) => ({ ...prev, phase: 'result', currentCell: cell, isCorrect: true, actionToApply: action, actionMessage: action.message })); }
             else { setTurnState((prev) => ({ ...prev, phase: 'next', currentCell: cell })); }
           } else { setTurnState((prev) => ({ ...prev, phase: 'next', currentCell: cell ?? null })); }
         }, 1200);
@@ -289,10 +295,21 @@ function PlayContent() {
       case 'answer': {
         const actionId = payload.is_correct ? turnState.currentCell?.correct_action_id : turnState.currentCell?.wrong_action_id;
         const action = actionId ? actionsRef.current.find((a) => a.id === actionId) ?? null : null;
+        setResultType('quiz');
         setTurnState((prev) => ({ ...prev, phase: 'result', selectedAnswer: payload.selected, isCorrect: payload.is_timeout ? null : payload.is_correct, actionToApply: action, actionMessage: action?.message ?? null }));
         break;
       }
-      case 'action': { fetchTeams(sessionIdRef.current); break; }
+      case 'action': {
+        // ★ アクションでゴール判定を追加
+        await fetchTeams(sessionIdRef.current);
+        const updatedTeam = teamsRef.current.find((t) => t.id === team_id);
+        if (updatedTeam?.is_finished) {
+          setIsGoalResult(true);
+          setResultType('goal');
+          setTurnState((prev) => ({ ...prev, phase: 'result', isCorrect: true, actionToApply: null, currentQuiz: null, actionMessage: `${updatedTeam.team_name} がゴールしました！🎉` }));
+        }
+        break;
+      }
     }
   }
 
@@ -330,7 +347,7 @@ function PlayContent() {
           else { setTurnState((prev) => ({ ...prev, phase: 'next', currentCell: cell })); isActingRef.current = false; setTimeout(() => advanceTurn(), 1500); }
         } else if (cell && (cell.cell_type === 'イベント' || cell.cell_type === 'ボーナス') && cell.correct_action_id) {
           const action = actionsRef.current.find((a) => a.id === cell.correct_action_id);
-          if (action) { setTurnState((prev) => ({ ...prev, phase: 'result', currentCell: cell, isCorrect: true, actionToApply: action, actionMessage: action.message })); }
+          if (action) { setResultType('event'); setTurnState((prev) => ({ ...prev, phase: 'result', currentCell: cell, isCorrect: true, actionToApply: action, actionMessage: action.message })); }
           else { setTurnState((prev) => ({ ...prev, phase: 'next', currentCell: cell })); isActingRef.current = false; setTimeout(() => advanceTurn(), 1500); }
         } else { setTurnState((prev) => ({ ...prev, phase: 'next', currentCell: cell ?? null })); isActingRef.current = false; setTimeout(() => advanceTurn(), 1500); }
       }, 1200);
@@ -348,6 +365,7 @@ function PlayContent() {
     const actionId = isCorrect ? turnState.currentCell.correct_action_id : turnState.currentCell.wrong_action_id;
     const action = actionId ? actionsRef.current.find((a) => a.id === actionId) ?? null : null;
     await supabaseRef.current.from('turn_events').insert({ game_session_id: currentSession.id, team_id: currentTeam.id, turn_number: currentSession.turn_number, event_type: 'answer', payload: { quiz_id: turnState.currentQuiz.id, selected: choice, correct_answer: turnState.currentQuiz.answer, is_correct: isCorrect, is_timeout: isTimeout } });
+    setResultType('quiz');
     setTurnState((prev) => ({ ...prev, phase: 'result', selectedAnswer: choice, isCorrect: isTimeout ? null : isCorrect, actionToApply: action, actionMessage: action?.message ?? null }));
   }
 
@@ -355,6 +373,7 @@ function PlayContent() {
   function dismissRemoteResult() {
     setTurnState(INITIAL_TURN_STATE);
     setIsGoalResult(false);
+    setResultType('quiz');
   }
 
   async function handleResultContinue() {
@@ -379,6 +398,7 @@ function PlayContent() {
         await supabaseRef.current.from('teams').update({ is_finished: true, finished_turn: currentSession.turn_number }).eq('id', currentTeam.id);
         await fetchTeams(currentSession.id);
         setIsGoalResult(true);
+        setResultType('goal');
         setTurnState((prev) => ({ ...prev, phase: 'result', isCorrect: true, actionToApply: null, currentQuiz: null, actionMessage: `${currentTeam.team_name} がゴールしました！🎉` }));
         isActingRef.current = false;
         return;
@@ -396,6 +416,7 @@ function PlayContent() {
     await supabaseRef.current.from('teams').update({ is_finished: true, finished_turn: sess.turn_number, current_position: maxCell }).eq('id', team.id);
     await fetchTeams(sess.id);
     setIsGoalResult(true);
+    setResultType('goal');
     setTurnState((prev) => ({ ...prev, phase: 'result', isCorrect: true, actionToApply: null, actionMessage: `${team.team_name} がゴールしました！🎉` }));
   }
 
@@ -519,7 +540,7 @@ function PlayContent() {
         <QuizModal quiz={turnState.currentQuiz} timeLimit={gameSet?.answer_time_limit ?? 30} onAnswer={handleAnswer} readOnly={isHost || !canAnswer} />
       )}
       {turnState.phase === 'result' && (
-        <ResultModal isCorrect={turnState.isCorrect} explanation={turnState.currentQuiz?.explanation ?? null} action={turnState.actionToApply} actionMessage={turnState.actionMessage} onContinue={resultOnContinue} canContinue={canContinue} autoCloseSeconds={resultAutoClose} />
+        <ResultModal isCorrect={turnState.isCorrect} explanation={turnState.currentQuiz?.explanation ?? null} action={turnState.actionToApply} actionMessage={turnState.actionMessage} onContinue={resultOnContinue} canContinue={canContinue} autoCloseSeconds={resultAutoClose} resultType={resultType} />
       )}
     </div>
   );
