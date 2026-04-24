@@ -235,7 +235,6 @@ function PlayContent() {
       .subscribe(async (status) => {
         if (status === 'SUBSCRIBED') {
           setConnectionLost(false);
-          setRealtimeReady(true);
           // 3. SUBSCRIBEDになってから全データを取得（この時点からRealtimeイベントを逃さない）
           await loadAllGameData(sess);
         }
