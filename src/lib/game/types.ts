@@ -3,6 +3,9 @@
 export type CellType = 'スタート' | '通常' | 'イベント' | 'ボーナス' | 'ゴール';
 export type ActionType = '進む' | '戻る' | 'スタートへ戻る' | 'ゴールへ' | 'スキップ' | 'もう一度' | '1回休み' | 'なし';
 export type Difficulty = '易' | '中' | '難';
+export type PlayMode = 'individual' | 'team';
+export type ProgressMode = 'turn_based' | 'simultaneous';
+export type AnswerRule = 'anyone' | 'unanimous';
 
 export type Cell = {
   id: string;
@@ -45,10 +48,17 @@ export type GameSession = {
   game_code: string;
   game_set_id: string;
   host_name: string | null;
-  status: 'waiting' | 'playing' | 'finished';
+  status: 'waiting' | 'team_forming' | 'playing' | 'finished';
   current_turn_team_id: string | null;
   turn_number: number;
   max_teams: number;
+  // v2 フィールド
+  play_mode: PlayMode;
+  progress_mode: ProgressMode;
+  answer_rule: AnswerRule;
+  max_players: number;
+  team_count: number;
+  //
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
@@ -69,6 +79,17 @@ export type Team = {
   roll_again: boolean;
   is_finished: boolean;
   finished_turn: number | null;
+  is_individual: boolean;
+  joined_at: string;
+};
+
+export type Player = {
+  id: string;
+  game_session_id: string;
+  player_name: string;
+  team_id: string | null;
+  is_spectator: boolean;
+  is_online: boolean;
   joined_at: string;
 };
 
@@ -79,6 +100,16 @@ export type GameSet = {
   dice_sides: number;
   dice_count: number;
   answer_time_limit: number | null;
+};
+
+// sessionStorage に保存するプレイヤー情報
+export type StoredPlayerInfo = {
+  playerId: string;
+  playerName: string;
+  teamId: string | null;
+  teamName: string | null;
+  teamColor: string | null;
+  teamEmoji: string | null;
 };
 
 // ターン中のフェーズ
